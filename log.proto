@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+package nomadatc;
+
+message OutputData {
+  int64 stream = 1;
+  bool stderr = 2;
+  bytes data = 3;
+
+  bool finished = 4;
+  int32 finished_status = 5;
+}
+
+message Actions {
+  int64 signal = 1;
+  bytes input = 2;
+  bool close_input = 3;
+}
+
+message FileRequest {
+  string path = 1;
+  int32 key = 2;
+}
+
+message FileData {
+  int32 key = 1;
+  bytes data = 2;
+}
+
+service Task {
+  // Sends a greeting
+  rpc EmitOutput(stream OutputData) returns (stream Actions) {}
+  rpc ProvideFiles(stream FileData) returns (stream FileRequest) {}
+}
