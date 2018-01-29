@@ -174,7 +174,11 @@ func main() {
 		log.Fatal(err)
 	}
 
+	var wg sync.WaitGroup
+
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
 			msg, err := emit.Recv()
 			if err != nil {
@@ -257,7 +261,7 @@ func main() {
 			log.Fatal(err)
 		}
 	} else {
-		log.Printf("sending finished with status=1")
+		log.Printf("sending finished with status=0")
 		err = emit.Send(&nomadatc.OutputData{
 			Finished:       true,
 			FinishedStatus: 0,
@@ -329,7 +333,9 @@ func main() {
 		}
 	}
 
-	time.Sleep(1 * time.Second)
+	emit.CloseSend()
+	wg.Wait()
+
 	conn.Close()
 
 	log.Printf("exitting: %v", conn.GetState())

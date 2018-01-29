@@ -13,6 +13,7 @@ import (
 	"github.com/concourse/atc/worker"
 	"github.com/concourse/baggageclaim"
 	"github.com/cppforlife/go-semi-semantic/version"
+	nomad "github.com/hashicorp/nomad/api"
 )
 
 type WorkerProvider struct {
@@ -22,18 +23,29 @@ type WorkerProvider struct {
 	TeamFactory           db.TeamFactory
 	Clock                 c.Clock
 	Driver                *Driver
+	Datacenters           []string
+	URL                   string
+	InternalIP            string
+	InternalPort          int
+}
+
+func (w *WorkerProvider) nomadConfig() *nomad.Config {
+	cfg := nomad.DefaultConfig()
+	cfg.Address = w.URL
+	return cfg
 }
 
 func (w *WorkerProvider) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
-	var resourceTypes []atc.WorkerResourceType
-	resourceTypes = append(resourceTypes, atc.WorkerResourceType{
-		Type:  "git",
-		Image: "concourse/git-resource",
-	})
+	w.Logger.Info("nomad-worker-started",
+		lager.Data{
+			"internal-ip":   w.InternalIP,
+			"internal-port": w.InternalPort,
+			"datacenters":   w.Datacenters,
+		})
 
 	workerInfo := atc.Worker{
 		ActiveContainers: 0,
-		ResourceTypes:    resourceTypes,
+		ResourceTypes:    CurrentResources,
 		Platform:         "linux",
 		Tags:             []string{},
 		Name:             "nomad",

@@ -4,8 +4,8 @@ import (
 	"errors"
 	fmt "fmt"
 	io "io"
-	"log"
 	"net"
+	"net/http"
 	"os"
 	strconv "strconv"
 	"sync"
@@ -14,10 +14,11 @@ import (
 
 	"code.cloudfoundry.org/lager"
 	"github.com/concourse/atc/worker"
-	"github.com/davecgh/go-spew/spew"
 	context "golang.org/x/net/context"
 	grpc "google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 type Driver struct {
@@ -25,31 +26,38 @@ type Driver struct {
 
 	logger lager.Logger
 
-	root string
 	serv *grpc.Server
 
 	mu         sync.Mutex
 	nextStream int64
 	streams    map[int64]*Process
 
-	l net.Listener
+	l       net.Listener
+	ldriver net.Listener
 }
 
-func NewDriver(logger lager.Logger, root string) (*Driver, error) {
+func NewDriver(logger lager.Logger, port int) (*Driver, error) {
 	d := &Driver{
 		logger:     logger.Session("nomad-driver"),
-		root:       root,
 		streams:    make(map[int64]*Process),
 		nextStream: 1,
 		xid:        time.Now().Unix(),
 	}
 
-	l, err := net.Listen("tcp", "0.0.0.0:12101")
+	l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
 	if err != nil {
 		return nil, err
 	}
 
 	d.l = l
+
+	ld, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port+1))
+	if err != nil {
+		return nil, err
+	}
+
+	d.ldriver = ld
+
 	d.serv = grpc.NewServer()
 
 	RegisterTaskServer(d.serv, d)
@@ -64,7 +72,35 @@ func (d *Driver) XID() int64 {
 func (d *Driver) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
 	close(ready)
 
-	errc := make(chan error, 1)
+	dhs := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			if req.URL.Path == "/_driver.tar.gz" {
+				f, err := os.Open("bin/driver.tar.gz")
+				if err != nil {
+					http.Error(w, err.Error(), 500)
+					return
+				}
+
+				stat, err := f.Stat()
+				if err != nil {
+					http.Error(w, err.Error(), 500)
+				}
+
+				w.Header().Add("Content-Length", strconv.Itoa(int(stat.Size())))
+
+				io.Copy(w, f)
+				f.Close()
+			} else {
+				http.NotFound(w, req)
+			}
+		}),
+	}
+
+	errc := make(chan error, 2)
+
+	go func() {
+		errc <- dhs.Serve(d.ldriver)
+	}()
 
 	go func() {
 		errc <- d.serv.Serve(d.l)
@@ -75,6 +111,7 @@ func (d *Driver) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
 		return err
 	case <-signals:
 		d.l.Close()
+		d.ldriver.Close()
 
 		return nil
 	}
@@ -83,8 +120,7 @@ func (d *Driver) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
 func (d *Driver) Register(p *Process) int64 {
 	d.mu.Lock()
 
-	sid := d.nextStream
-	d.nextStream++
+	sid := d.XID()
 
 	d.streams[sid] = p
 
@@ -256,8 +292,18 @@ func (d *Driver) EmitOutput(s Task_EmitOutputServer) error {
 	for {
 		msg, err := s.Recv()
 		if err != nil {
-			d.logger.Error("nomad-driver-output-error", err)
-			return err
+			if s, ok := status.FromError(err); ok {
+				if s.Code() == codes.Canceled {
+					break
+				}
+			}
+
+			if err != context.Canceled {
+				d.logger.Error("nomad-driver-output-error", err)
+				return err
+			}
+
+			break
 		}
 
 		if msg.Finished {
@@ -267,8 +313,6 @@ func (d *Driver) EmitOutput(s Task_EmitOutputServer) error {
 		}
 
 		if len(msg.Data) > 0 {
-			spew.Dump(msg.Data)
-
 			if msg.Stderr {
 				if proc.io.Stderr != nil {
 					proc.io.Stderr.Write(msg.Data)
@@ -280,6 +324,8 @@ func (d *Driver) EmitOutput(s Task_EmitOutputServer) error {
 			}
 		}
 	}
+
+	return nil
 }
 
 const chunkSize = 4096
@@ -333,13 +379,6 @@ type volStream struct {
 }
 
 func (vs volStream) StreamIn(path string, r io.Reader) error {
-	f, err := os.Create(fmt.Sprintf("tmp/%s.tar", vs.job))
-	if err != nil {
-		panic(err)
-	}
-
-	defer f.Close()
-
 	buf := make([]byte, chunkSize)
 
 	for {
@@ -352,14 +391,11 @@ func (vs volStream) StreamIn(path string, r io.Reader) error {
 			return err
 		}
 
-		f.Write(buf[:n])
-
 		err = vs.stream.Send(&FileData{
 			Data: buf[:n],
 		})
 
 		if err != nil {
-			log.Printf("error sending data: %s", err)
 			return err
 		}
 	}

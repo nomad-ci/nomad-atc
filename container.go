@@ -1,6 +1,7 @@
 package nomadatc
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,7 +47,7 @@ func (c *Container) Stop(kill bool) error {
 		return nil
 	}
 
-	cfg := nomad.DefaultConfig()
+	cfg := c.Worker.Provider.nomadConfig()
 
 	n, err := nomad.NewClient(cfg)
 	if err != nil {
@@ -106,23 +107,18 @@ func IntToPtr(i int) *int {
 }
 
 func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Process, error) {
-	cfg := nomad.DefaultConfig()
+	cfg := c.Worker.Provider.nomadConfig()
 
 	n, err := nomad.NewClient(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	jobId := fmt.Sprintf("atc:%s:%s:%s:%s:%x", c.md.Type, c.md.PipelineName, c.md.JobName, c.md.StepName, c.Worker.Provider.Driver.XID())
-
-	c.id = jobId
-
 	proc := &Process{
 		Container: c,
 		logger:    c.Logger,
 		id:        spec.Path,
 		api:       n,
-		job:       jobId,
 		spec:      spec,
 		io:        io,
 		done:      make(chan struct{}, 1),
@@ -130,13 +126,18 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 		buildId:   c.md.BuildID,
 	}
 
-	c.process = proc
-
 	stream := c.Worker.Provider.Register(proc)
+
+	jobId := fmt.Sprintf("atc:%x:%s:%s:%s:%s", stream, c.md.Type, c.md.PipelineName, c.md.JobName, c.md.StepName)
+
+	proc.job = jobId
+	c.id = jobId
+
+	c.process = proc
 
 	var tc TaskConfig
 	tc.Stream = stream
-	tc.Host = "10.0.1.168:12101"
+	tc.Host = fmt.Sprintf("%s:%d", c.Worker.Provider.InternalIP, c.Worker.Provider.InternalPort)
 	tc.Path = spec.Path
 	tc.Args = spec.Args
 	tc.Dir = spec.Dir
@@ -151,15 +152,22 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 		tc.Inputs = append(tc.Inputs, m.MountPath)
 	}
 
-	var dockerImage string
+	var (
+		dockerImage string
+		priv        bool
+	)
 
 	ir := c.spec.ImageSpec.ImageResource
 	if ir == nil || ir.Type != "docker-image" {
-		switch c.spec.ImageSpec.ResourceType {
-		case "git":
-			dockerImage = "concourse/git-resource"
-		default:
-			panic(fmt.Sprintf("unsupported resource: %s", c.spec.ImageSpec.ResourceType))
+		if br, ok := AllResources[c.spec.ImageSpec.ResourceType]; ok {
+			dockerImage = br.Image
+			if br.Version != "" {
+				dockerImage = dockerImage + ":" + br.Version
+			}
+
+			priv = br.Privileged
+		} else {
+			fmt.Errorf("unsupported resource: %s", c.spec.ImageSpec.ResourceType)
 		}
 	} else {
 		src, err := ir.Source.Evaluate()
@@ -192,7 +200,7 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 		ID:   StringToPtr(jobId),
 		Name: StringToPtr(jobId),
 
-		Datacenters: []string{"phx"},
+		Datacenters: c.Worker.Provider.Datacenters,
 
 		Type: StringToPtr("batch"),
 
@@ -215,14 +223,16 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 						Templates: []*nomad.Template{&tmpl},
 						Artifacts: []*nomad.TaskArtifact{
 							&nomad.TaskArtifact{
-								GetterSource: StringToPtr("http://10.0.1.168:8080/_driver.tar.gz"),
+								GetterSource: StringToPtr(
+									fmt.Sprintf("http://%s:%d/_driver.tar.gz",
+										c.Worker.Provider.InternalIP, c.Worker.Provider.InternalPort+1)),
 								RelativeDest: StringToPtr("local/driver"),
 							},
 						},
 						Config: map[string]interface{}{
 							"image":      dockerImage,
 							"command":    "/local/driver/driver",
-							"privileged": true,
+							"privileged": priv,
 							"mounts": []map[string]interface{}{
 								{
 									"target": "/scratch",
@@ -254,7 +264,7 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 		return nil, err
 	}
 
-	c.Logger.Info("nomad-registered-job", lager.Data{"job": *job.ID, "eval": resp.EvalID})
+	c.Logger.Info("nomad-registered-job", lager.Data{"job": *job.ID, "eval": resp.EvalID, "image": dockerImage})
 	go func() {
 		proc.monitor(resp.EvalID)
 	}()
@@ -417,17 +427,6 @@ outer:
 			}
 
 		case "complete", "failed":
-			/*
-				for _, ts := range alloc.TaskStates {
-					for _, ev := range ts.Events {
-						log.L.Debug("job event", "event", ev.Type, "exit-code", ev.ExitCode)
-						if ev.ExitCode != 0 {
-							p.status = ev.ExitCode
-						}
-					}
-				}
-			*/
-
 			if alloc.ClientStatus == "failed" {
 				p.logger.Error("nomad-allocation-failed", errors.New("allocation failed"), lager.Data{"job": p.job})
 			} else {
@@ -459,6 +458,33 @@ func (fr *StreamFileRequest) Data(b []byte) error {
 
 func (fr *StreamFileRequest) Close() error {
 	return fr.writer.Close()
+}
+
+type TransparentGzipReader struct {
+	Under io.ReadCloser
+
+	gzr *gzip.Reader
+}
+
+func (t *TransparentGzipReader) Read(b []byte) (int, error) {
+	if t.gzr == nil {
+		gzr, err := gzip.NewReader(t.Under)
+		if err != nil {
+			return 0, err
+		}
+
+		t.gzr = gzr
+	}
+
+	return t.gzr.Read(b)
+}
+
+func (t *TransparentGzipReader) Close() error {
+	if t.gzr != nil {
+		return t.gzr.Close()
+	} else {
+		return t.Under.Close()
+	}
 }
 
 func (p *Process) StreamOut(path string) (io.ReadCloser, error) {

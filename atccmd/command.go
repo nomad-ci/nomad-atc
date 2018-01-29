@@ -8,13 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net/http"
 	_ "net/http/pprof"
 	"net/url"
 	"os"
-	"strconv"
 	"time"
 
 	"code.cloudfoundry.org/clock"
@@ -128,6 +126,14 @@ type ATCCommand struct {
 		BaggageclaimURL URLFlag           `long:"baggageclaim-url" description:"A Baggageclaim API endpoint to register with the worker."`
 		ResourceTypes   map[string]string `long:"resource"         description:"A resource type to advertise for the worker. Can be specified multiple times." value-name:"TYPE:IMAGE"`
 	} `group:"Static Worker (optional)" namespace:"worker"`
+
+	Nomad struct {
+		ResourceTypes map[string]string `long:"resource"    description:"A resource type to advertise for the worker. Can be specified multiple times." value-name:"TYPE:IMAGE"`
+		Datacenters   []string          `long:"datacenters" description:"The datacenters to specify in nomad jobs"`
+		URL           URLFlag           `long:"url"         description:"URL to access nomad cluster"`
+		InternalIP    IPFlag            `long:"internal-ip" description:"Internal IP of concourse for workers to connect back to"`
+		InternalPort  int               `long:"internal-port" description:"Port to use along with internal-ip for workers to connect back to" default:"12101"`
+	} `group:"Nomad Cluster" namespace:"nomad"`
 
 	Metrics struct {
 		HostName   string            `long:"metrics-host-name"   description:"Host string to attach to emitted metrics."`
@@ -395,12 +401,25 @@ func (cmd *ATCCommand) constructMembers(
 
 	logger.Debug("nomad-worker-provider-enabled")
 
+	internalHost := string(cmd.Nomad.InternalIP)
+	if internalHost == "" {
+		internalHost = cmd.ExternalURL.URL().Hostname()
+	}
+
+	if internalHost == "" {
+		internalHost = "127.0.0.1"
+	}
+
 	workerProvider := &nomadatc.WorkerProvider{
 		Driver:                nomadDriver,
 		Logger:                logger,
 		WorkerResourceFactory: dbWorkerBaseResourceTypeFactory,
 		WorkerFactory:         dbWorkerFactory,
 		Clock:                 clock.NewClock(),
+		Datacenters:           cmd.Nomad.Datacenters,
+		URL:                   cmd.Nomad.URL.String(),
+		InternalIP:            internalHost,
+		InternalPort:          cmd.Nomad.InternalPort,
 	}
 
 	/*
@@ -749,7 +768,7 @@ func (cmd *ATCCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		}
 	})
 
-	nomadDriver, err := nomadatc.NewDriver(logger, "tmp")
+	nomadDriver, err := nomadatc.NewDriver(logger, cmd.Nomad.InternalPort)
 	if err != nil {
 		return nil, err
 	}
@@ -1094,7 +1113,6 @@ func (cmd *ATCCommand) constructHTTPHandler(
 	authHandler http.Handler,
 ) http.Handler {
 	webMux := http.NewServeMux()
-	webMux.Handle("/_driver", http.FileServer(http.Dir("./bin")))
 	webMux.Handle("/api/v1/", apiHandler)
 	webMux.Handle("/oauth/", authHandler)
 	webMux.Handle("/auth/", authHandler)
@@ -1114,29 +1132,7 @@ func (cmd *ATCCommand) constructHTTPHandler(
 		},
 	}
 
-	driverWrapper := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path == "/_driver.tar.gz" {
-			f, err := os.Open("bin/driver.tar.gz")
-			if err != nil {
-				http.Error(w, err.Error(), 500)
-				return
-			}
-
-			stat, err := f.Stat()
-			if err != nil {
-				http.Error(w, err.Error(), 500)
-			}
-
-			w.Header().Add("Content-Length", strconv.Itoa(int(stat.Size())))
-
-			io.Copy(w, f)
-			f.Close()
-		} else {
-			httpHandler.ServeHTTP(w, req)
-		}
-	})
-
-	return driverWrapper
+	return httpHandler
 }
 
 func (cmd *ATCCommand) constructAPIHandler(
