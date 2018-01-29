@@ -1,23 +1,20 @@
 package main
 
 import (
-	"archive/tar"
-	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/concourse/go-archive/tarfs"
 	nomadatc "github.com/nomad-ci/nomad-atc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -44,6 +41,19 @@ func main() {
 
 	log.Printf("config loaded: %#v", &cfg)
 
+	if cfg.Dir != "" {
+		log.Printf("running in: %s", cfg.Dir)
+		err = os.MkdirAll(cfg.Dir, 755)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		err = os.Chdir(cfg.Dir)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	conn, err := grpc.Dial(cfg.Host, grpc.WithBlock(), grpc.WithInsecure())
 	if err != nil {
 		log.Fatal(err)
@@ -51,11 +61,31 @@ func main() {
 
 	tc := nomadatc.NewTaskClient(conn)
 
-	ctx := context.Background()
-
 	md := metadata.Pairs("stream", strconv.Itoa(int(cfg.Stream)))
 
-	ctx = metadata.NewOutgoingContext(ctx, md)
+	ctx := metadata.NewOutgoingContext(context.Background(), md)
+
+	if len(cfg.Inputs) > 0 {
+		log.Printf("inputs to consume: %s", cfg.Inputs)
+
+		for _, name := range cfg.Inputs {
+			fd, err := tc.RequestVolume(ctx, &nomadatc.VolumeRequest{
+				Name: name,
+			})
+
+			gzr, err := gzip.NewReader(filedataToReader{files: fd})
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			log.Printf("extracting to %s", name)
+			err = tarfs.Extract(gzr, name)
+			gzr.Close()
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
 
 	emit, err := tc.EmitOutput(ctx)
 	if err != nil {
@@ -63,47 +93,47 @@ func main() {
 	}
 
 	cmd := exec.Command(cfg.Path, cfg.Args...)
+	cmd.Env = cfg.Env
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	var wg sync.WaitGroup
+	var (
+		buffers sync.Pool
+		output  = make(chan *nomadatc.OutputData)
+		done    = make(chan bool, 2)
+	)
+
+	buffers.New = func() interface{} {
+		return make([]byte, 1024)
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
-
-		bytes := make([]byte, 1024)
+		defer func() {
+			done <- true
+		}()
 
 		for {
+			bytes := buffers.Get().([]byte)
 			n, rerr := stdout.Read(bytes)
 
 			if n > 0 {
 				os.Stdout.Write(bytes[:n])
 
-				err = emit.Send(&nomadatc.OutputData{
+				output <- &nomadatc.OutputData{
 					Stream: cfg.Stream,
 					Data:   bytes[:n],
-				})
-
-				if err != nil {
-					log.Printf("stdout send err: %s", err)
-					return
 				}
 			}
 
 			if rerr != nil {
-				log.Printf("stdout err: %s", rerr)
-				emit.Send(&nomadatc.OutputData{
-					Stream: cfg.Stream,
-				})
 				return
 			}
 		}
@@ -114,37 +144,26 @@ func main() {
 		log.Fatal(err)
 	}
 
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
-
-		bytes := make([]byte, 1024)
+		defer func() {
+			done <- true
+		}()
 
 		for {
+			bytes := buffers.Get().([]byte)
 			n, rerr := stderr.Read(bytes)
 
 			if n > 0 {
 				os.Stderr.Write(bytes[:n])
 
-				log.Printf("sending stderr data: %v", string(bytes[:n]))
-
-				err = emit.Send(&nomadatc.OutputData{
+				output <- &nomadatc.OutputData{
 					Stream: cfg.Stream,
 					Stderr: true,
 					Data:   bytes[:n],
-				})
-
-				if err != nil {
-					log.Printf("stderr send err: %s", err)
-					return
 				}
 			}
 
 			if rerr != nil {
-				log.Printf("stderr err: %s", rerr)
-				emit.Send(&nomadatc.OutputData{
-					Stream: cfg.Stream,
-				})
 				return
 			}
 		}
@@ -209,12 +228,26 @@ func main() {
 	}()
 
 	log.Printf("waiting on output...")
-	wg.Wait()
+	left := 2
+
+	for left > 0 {
+		select {
+		case data := <-output:
+			err = emit.Send(data)
+			if err != nil {
+				log.Fatal(err)
+			}
+			buffers.Put(data.Data)
+		case <-done:
+			left--
+		}
+	}
 
 	log.Printf("waiting on process...")
 	err = cmd.Wait()
 
 	if err != nil {
+		log.Printf("sending finished with status=1")
 		err = emit.Send(&nomadatc.OutputData{
 			Finished:       true,
 			FinishedStatus: 1,
@@ -224,6 +257,7 @@ func main() {
 			log.Fatal(err)
 		}
 	} else {
+		log.Printf("sending finished with status=1")
 		err = emit.Send(&nomadatc.OutputData{
 			Finished:       true,
 			FinishedStatus: 0,
@@ -234,106 +268,71 @@ func main() {
 		}
 	}
 
-	err = emit.CloseSend()
-	if err != nil {
-		log.Printf("close and send failed: %s", err)
-	}
-
 	log.Printf("process done: %s", err)
 
-	ctx, _ = context.WithTimeout(ctx, 10*time.Minute)
+	if cfg.WaitForVolumes {
+		ctx, _ = context.WithTimeout(ctx, 10*time.Minute)
 
-	files, err := tc.ProvideFiles(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	for {
-		req, err := files.Recv()
+		files, err := tc.ProvideFiles(ctx)
 		if err != nil {
-			log.Printf("files recv error: %s", err)
-			break
+			log.Fatal(err)
 		}
 
-		log.Printf("fetching requested file: %s", req.Path)
-
-		f, err := os.Open(req.Path)
-		if err != nil {
-			log.Printf("Unable to open requested file: %s", err)
-			files.Send(&nomadatc.FileData{})
-			continue
-		}
-
-		var tarBuf bytes.Buffer
-
-		tw := tar.NewWriter(&tarBuf)
-
-		stat, err := f.Stat()
-		if err != nil {
-			log.Printf("Unable to stat requested file: %s", err)
-			files.Send(&nomadatc.FileData{})
-			continue
-		}
-
-		hdr, err := tar.FileInfoHeader(stat, "")
-		if err != nil {
-			log.Printf("Unable to make tar header: %s", err)
-			files.Send(&nomadatc.FileData{})
-			continue
-		}
-
-		err = tw.WriteHeader(hdr)
-		if err != nil {
-			log.Printf("Unable to write tar header: %s", err)
-			files.Send(&nomadatc.FileData{})
-			continue
-		}
-
-		_, err = io.Copy(tw, f)
-		if err != nil {
-			log.Printf("Unable to copy file to tar: %s", err)
-			files.Send(&nomadatc.FileData{})
-			continue
-		}
-
-		err = tw.Close()
-		if err != nil {
-			log.Printf("unable to close tar writer: %s", err)
-			files.Send(&nomadatc.FileData{})
-			continue
-		}
-
-		log.Printf("sending file as tar...")
-
-		data := tarBuf.Bytes()
-
-		for len(data) > 0 {
-			var buf []byte
-
-			if len(data) > 4096 {
-				buf = data[:4096]
-				data = data[:4096]
-			} else {
-				buf = data
-				data = nil
+		for {
+			req, err := files.Recv()
+			if err != nil {
+				log.Printf("files recv error: %s", err)
+				break
 			}
 
-			err = files.Send(&nomadatc.FileData{
-				Data: buf,
-			})
+			log.Printf("fetching requested file: %s", req.Path)
 
+			var wdt writerToData
+			wdt.files = files
+
+			var out io.Writer = wdt
+
+			src := req.Path
+
+			fileInfo, err := os.Stat(src)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			var tarDir, tarPath string
+			var gzw *gzip.Writer
+
+			if fileInfo.IsDir() {
+				tarDir = src
+				tarPath = "."
+
+				gzw = gzip.NewWriter(out)
+				out = gzw
+			} else {
+				tarDir = filepath.Dir(src)
+				tarPath = filepath.Base(src)
+			}
+
+			err = tarfs.Compress(out, tarDir, tarPath)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			if gzw != nil {
+				gzw.Close()
+			}
+
+			err = files.Send(&nomadatc.FileData{})
 			if err != nil {
 				log.Fatal(err)
 			}
 		}
 	}
 
-	err = files.Send(&nomadatc.FileData{})
-	if err != nil {
-		log.Fatal(err)
-	}
+	time.Sleep(1 * time.Second)
+	conn.Close()
 
-	log.Printf("exitting.")
+	log.Printf("exitting: %v", conn.GetState())
 	if err != nil {
 		os.Exit(1)
 	}
@@ -341,60 +340,73 @@ func main() {
 	os.Exit(0)
 }
 
-func writeTar(source string, output io.Writer) error {
-	gzw := gzip.NewWriter(output)
-	defer gzw.Close()
+type writerToData struct {
+	files nomadatc.Task_ProvideFilesClient
+}
 
-	tarWriter := tar.NewWriter(gzw)
-	defer tarWriter.Close()
+const chunkSize = 1024 * 32
 
-	base := source
+func (w writerToData) Write(data []byte) (int, error) {
+	n := len(data)
 
-	if !strings.HasSuffix(base, "/") {
-		base = base + "/"
+	for len(data) > 0 {
+		var buf []byte
+
+		if len(data) > chunkSize {
+			buf = data[:chunkSize]
+			data = data[chunkSize:]
+		} else {
+			buf = data
+			data = nil
+		}
+
+		err := w.files.Send(&nomadatc.FileData{
+			Data: buf,
+		})
+
+		if err != nil {
+			return 0, nil
+		}
 	}
 
-	return filepath.Walk(source, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return fmt.Errorf("error walking to %s: %v", path, err)
+	return n, nil
+}
+
+type filedataToReader struct {
+	files nomadatc.Task_RequestVolumeClient
+	cont  *nomadatc.FileData
+}
+
+func (f filedataToReader) Read(b []byte) (int, error) {
+	if f.cont != nil {
+		if len(b) < len(f.cont.Data) {
+			copy(b, f.cont.Data[:len(b)])
+			f.cont.Data = f.cont.Data[len(b):]
+			return len(b), nil
+		} else {
+			data := f.cont
+			f.cont = nil
+			copy(b, data.Data)
+			return len(data.Data), nil
 		}
+	}
 
-		if path == source {
-			return nil
-		}
+	data, err := f.files.Recv()
+	if err != nil {
+		return 0, err
+	}
 
-		header, err := tar.FileInfoHeader(info, path)
-		if err != nil {
-			return fmt.Errorf("%s: making header: %v", path, err)
-		}
+	if len(data.Data) == 0 {
+		return 0, io.EOF
+	}
 
-		header.Name = strings.TrimPrefix(path, base)
-
-		if info.IsDir() && !strings.HasSuffix(header.Name, "/") {
-			header.Name += "/"
-		}
-
-		err = tarWriter.WriteHeader(header)
-		if err != nil {
-			return fmt.Errorf("%s: writing header: %v", path, err)
-		}
-
-		if info.IsDir() {
-			return nil
-		}
-
-		if header.Typeflag == tar.TypeReg {
-			file, err := os.Open(path)
-			if err != nil {
-				return fmt.Errorf("%s: open: %v", path, err)
-			}
-			defer file.Close()
-
-			_, err = io.CopyN(tarWriter, file, info.Size())
-			if err != nil && err != io.EOF {
-				return fmt.Errorf("%s: copying contents: %v", path, err)
-			}
-		}
-		return nil
-	})
+	if len(data.Data) > len(b) {
+		copy(b, data.Data[:len(b)])
+		data.Data = data.Data[len(b):]
+		f.cont = data
+		return len(b), nil
+	} else {
+		copy(b, data.Data)
+		return len(data.Data), nil
+	}
 }

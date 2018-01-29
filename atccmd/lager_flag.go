@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/fatih/color"
+
 	"code.cloudfoundry.org/lager"
 )
 
@@ -89,17 +91,23 @@ func (sink *prettySink) Log(log lager.LogFormat) {
 		pairs = append(pairs, k+"="+vs)
 	}
 
+	msg := log.Message
+	if strings.Index(msg, "nomad") != -1 {
+		msg = color.BlueString("%s", msg)
+	}
+
 	if log.Error == nil {
 		if len(pairs) == 0 {
 			fmt.Fprintf(sink.writer, "+ %s %s %s\n",
-				log.Timestamp, log.Source, log.Message)
+				log.Timestamp, log.Source, msg)
 		} else {
 			fmt.Fprintf(sink.writer, "+ %s %s %s\n  %s\n",
-				log.Timestamp, log.Source, log.Message, strings.Join(pairs, " "))
+				log.Timestamp, log.Source, msg, strings.Join(pairs, " "))
 		}
 	} else {
-		fmt.Fprintf(sink.writer, "! %s %s %s '%s'\n  %s\n",
-			log.Timestamp, log.Source, log.Message, log.Error.Error(), strings.Join(pairs, " "))
+		fmt.Fprintf(sink.writer, "%s %s %s %s %s\n  %s\n",
+			color.RedString("!"),
+			log.Timestamp, log.Source, msg, color.RedString("'%s'", log.Error.Error()), strings.Join(pairs, " "))
 
 	}
 	sink.writeL.Unlock()

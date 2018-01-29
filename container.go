@@ -10,8 +10,10 @@ import (
 
 	"code.cloudfoundry.org/garden"
 	"code.cloudfoundry.org/lager"
+	"github.com/concourse/atc/db"
 	"github.com/concourse/atc/worker"
 	nomad "github.com/hashicorp/nomad/api"
+	context "golang.org/x/net/context"
 )
 
 const (
@@ -27,8 +29,10 @@ type Container struct {
 	id      string
 	signals <-chan os.Signal
 	spec    worker.ContainerSpec
+	inputs  []worker.VolumeMount
 	mounts  []worker.VolumeMount
 	props   map[string]string
+	md      db.ContainerMetadata
 
 	process *Process
 }
@@ -109,19 +113,21 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 		return nil, err
 	}
 
-	jobId := fmt.Sprintf("atc-%d", time.Now().UnixNano())
+	jobId := fmt.Sprintf("atc:%s:%s:%s:%s:%x", c.md.Type, c.md.PipelineName, c.md.JobName, c.md.StepName, c.Worker.Provider.Driver.XID())
+
 	c.id = jobId
 
 	proc := &Process{
 		Container: c,
 		logger:    c.Logger,
-		id:        "main",
+		id:        spec.Path,
 		api:       n,
 		job:       jobId,
 		spec:      spec,
 		io:        io,
 		done:      make(chan struct{}, 1),
-		requests:  make(chan *StreamFileRequest),
+		requests:  make(chan *StreamFileRequest, 1),
+		buildId:   c.md.BuildID,
 	}
 
 	c.process = proc
@@ -133,6 +139,17 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 	tc.Host = "10.0.1.168:12101"
 	tc.Path = spec.Path
 	tc.Args = spec.Args
+	tc.Dir = spec.Dir
+	tc.Env = spec.Env
+
+	if c.md.Type == db.ContainerTypeGet ||
+		(c.md.Type == db.ContainerTypeTask && len(c.spec.Outputs) > 0) {
+		tc.WaitForVolumes = true
+	}
+
+	for _, m := range c.inputs {
+		tc.Inputs = append(tc.Inputs, m.MountPath)
+	}
 
 	var dockerImage string
 
@@ -150,9 +167,14 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 			return nil, err
 		}
 
-		dockerImage = src["repository"].(string)
-		if dockerImage == "" {
-			panic("no docker image")
+		if image, ok := src["repository"]; ok {
+			dockerImage = fmt.Sprintf("%s", image)
+		} else {
+			return nil, errors.New("no docker image specified")
+		}
+
+		if tag, ok := src["tag"]; ok {
+			dockerImage = fmt.Sprintf("%s:%s", dockerImage, tag)
 		}
 	}
 
@@ -232,7 +254,7 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 		return nil, err
 	}
 
-	c.Logger.Debug("nomad-registered-job", lager.Data{"eval": resp.EvalID})
+	c.Logger.Info("nomad-registered-job", lager.Data{"job": *job.ID, "eval": resp.EvalID})
 	go func() {
 		proc.monitor(resp.EvalID)
 	}()
@@ -322,6 +344,9 @@ type Process struct {
 	done   chan struct{}
 
 	requests chan *StreamFileRequest
+
+	buildId int
+	cancel  func()
 }
 
 func (p *Process) monitor(evalid string) {
@@ -361,12 +386,14 @@ outer:
 		return
 	}
 
-	p.logger.Debug("nomad-allocation-started", lager.Data{"alloc": id})
+	p.logger.Info("nomad-allocation-started", lager.Data{"alloc": id})
 
 	q.WaitIndex = meta.LastIndex
 	q.WaitTime = 10 * time.Second
 
 	var alloc *nomad.Allocation
+
+	var seenRunning bool
 
 	for {
 		alloc, meta, err = n.Allocations().Info(id, &q)
@@ -383,6 +410,12 @@ outer:
 		})
 
 		switch alloc.ClientStatus {
+		case "running":
+			if !seenRunning {
+				p.logger.Info("nomad-allocation-running", lager.Data{"alloc": id, "job": alloc.JobID})
+				seenRunning = true
+			}
+
 		case "complete", "failed":
 			/*
 				for _, ts := range alloc.TaskStates {
@@ -395,7 +428,11 @@ outer:
 				}
 			*/
 
-			p.logger.Debug("nomad-allocation-finished", lager.Data{"exit": p.status})
+			if alloc.ClientStatus == "failed" {
+				p.logger.Error("nomad-allocation-failed", errors.New("allocation failed"), lager.Data{"job": p.job})
+			} else {
+				p.logger.Info("nomad-allocation-finished", lager.Data{"job": p.job, "exit": p.status})
+			}
 			// close(p.done)
 			return
 		}
@@ -416,7 +453,6 @@ type StreamFileRequest struct {
 }
 
 func (fr *StreamFileRequest) Data(b []byte) error {
-	fr.Logger.Debug("nomad-stream-file-request", lager.Data{"path": fr.Path, "data": string(b)})
 	_, err := fr.writer.Write(b)
 	return err
 }
@@ -425,7 +461,7 @@ func (fr *StreamFileRequest) Close() error {
 	return fr.writer.Close()
 }
 
-func (p *Process) StreamFile(path string) (io.ReadCloser, error) {
+func (p *Process) StreamOut(path string) (io.ReadCloser, error) {
 	r, w := io.Pipe()
 
 	req := &StreamFileRequest{
@@ -439,13 +475,17 @@ func (p *Process) StreamFile(path string) (io.ReadCloser, error) {
 	return r, nil
 }
 
-func (p *Process) NextFileRequest() (*StreamFileRequest, error) {
-	req, ok := <-p.requests
-	if !ok {
-		return nil, io.EOF
-	}
+func (p *Process) NextFileRequest(ctx context.Context) (*StreamFileRequest, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case req, ok := <-p.requests:
+		if !ok {
+			return nil, io.EOF
+		}
 
-	return req, nil
+		return req, nil
+	}
 }
 
 func (p *Process) ID() string {
@@ -455,7 +495,7 @@ func (p *Process) ID() string {
 func (p *Process) Wait() (int, error) {
 	p.logger.Debug("nomad-process-waiting")
 	<-p.done
-	p.logger.Debug("nomad-process-finished", lager.Data{"exit": p.status})
+	p.logger.Info("nomad-process-finished", lager.Data{"job": p.job, "exit": p.status})
 	return p.status, nil
 }
 

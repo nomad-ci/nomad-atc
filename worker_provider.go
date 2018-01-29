@@ -13,7 +13,6 @@ import (
 	"github.com/concourse/atc/worker"
 	"github.com/concourse/baggageclaim"
 	"github.com/cppforlife/go-semi-semantic/version"
-	"github.com/davecgh/go-spew/spew"
 )
 
 type WorkerProvider struct {
@@ -131,9 +130,8 @@ func (w *Worker) FindOrCreateContainer(logger lager.Logger, signals <-chan os.Si
 		Logger:  logger,
 		signals: signals,
 		spec:    spec,
+		md:      md,
 	}
-
-	spew.Dump(spec.Inputs)
 
 	for _, input := range spec.Inputs {
 		volume := &Volume{
@@ -148,6 +146,7 @@ func (w *Worker) FindOrCreateContainer(logger lager.Logger, signals <-chan os.Si
 			MountPath: input.DestinationPath(),
 		}
 
+		cont.inputs = append(cont.inputs, mount)
 		cont.mounts = append(cont.mounts, mount)
 	}
 

@@ -2,17 +2,29 @@ package nomadatc
 
 import (
 	"errors"
+	fmt "fmt"
+	io "io"
+	"log"
 	"net"
 	"os"
 	strconv "strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 
+	"code.cloudfoundry.org/lager"
+	"github.com/concourse/atc/worker"
 	"github.com/davecgh/go-spew/spew"
+	context "golang.org/x/net/context"
 	grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
 
 type Driver struct {
+	xid int64
+
+	logger lager.Logger
+
 	root string
 	serv *grpc.Server
 
@@ -23,11 +35,13 @@ type Driver struct {
 	l net.Listener
 }
 
-func NewDriver(root string) (*Driver, error) {
+func NewDriver(logger lager.Logger, root string) (*Driver, error) {
 	d := &Driver{
+		logger:     logger.Session("nomad-driver"),
 		root:       root,
 		streams:    make(map[int64]*Process),
 		nextStream: 1,
+		xid:        time.Now().Unix(),
 	}
 
 	l, err := net.Listen("tcp", "0.0.0.0:12101")
@@ -43,10 +57,27 @@ func NewDriver(root string) (*Driver, error) {
 	return d, nil
 }
 
-func (d *Driver) Run(signal <-chan os.Signal, ready chan<- struct{}) error {
+func (d *Driver) XID() int64 {
+	return atomic.AddInt64(&d.xid, 1)
+}
+
+func (d *Driver) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
 	close(ready)
 
-	return d.serv.Serve(d.l)
+	errc := make(chan error, 1)
+
+	go func() {
+		errc <- d.serv.Serve(d.l)
+	}()
+
+	select {
+	case err := <-errc:
+		return err
+	case <-signals:
+		d.l.Close()
+
+		return nil
+	}
 }
 
 func (d *Driver) Register(p *Process) int64 {
@@ -65,9 +96,40 @@ func (d *Driver) Register(p *Process) int64 {
 func (d *Driver) Deregister(s int64) {
 	d.mu.Lock()
 
-	delete(d.streams, s)
+	proc, ok := d.streams[s]
+	if ok {
+		delete(d.streams, s)
+
+		if proc.cancel != nil {
+			proc.cancel()
+		}
+	}
 
 	d.mu.Unlock()
+}
+
+func (d *Driver) CancelForBuild(id int) {
+	d.logger.Info("nomad-driver-cancel-for-build", lager.Data{"build": id})
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	var toDelete []int64
+
+	for k, s := range d.streams {
+		if s.buildId == id {
+			d.logger.Info("nomad-driver-cancel-for-job", lager.Data{"job": s.job})
+
+			if s.cancel != nil {
+				s.cancel()
+			}
+
+			toDelete = append(toDelete, k)
+		}
+	}
+
+	for _, k := range toDelete {
+		delete(d.streams, k)
+	}
 }
 
 func (d *Driver) FindProcess(stream int64) (*Process, bool) {
@@ -100,15 +162,25 @@ func (d *Driver) ProvideFiles(s Task_ProvideFilesServer) error {
 		return errors.New("unknown process")
 	}
 
+	ctx, cancel := context.WithCancel(s.Context())
+
+	proc.cancel = cancel
+
 	for {
-		req, err := proc.NextFileRequest()
+		d.logger.Info("providing-files", lager.Data{"job": proc.job})
+
+		req, err := proc.NextFileRequest(ctx)
 		if err != nil {
 			break
 		}
 
+		start := time.Now()
+		d.logger.Info("start-requesting-file", lager.Data{"job": proc.job, "path": req.Path})
+
 		err = s.Send(&FileRequest{
 			Path: req.Path,
 		})
+
 		if err != nil {
 			return err
 		}
@@ -120,7 +192,9 @@ func (d *Driver) ProvideFiles(s Task_ProvideFilesServer) error {
 			}
 
 			if len(data.Data) == 0 {
+				d.logger.Info("finished-requesting-file", lager.Data{"job": proc.job, "path": req.Path, "elapse": time.Since(start).String()})
 				req.Close()
+				break
 			} else {
 				req.Data(data.Data)
 			}
@@ -152,6 +226,9 @@ func (d *Driver) EmitOutput(s Task_EmitOutputServer) error {
 		return errors.New("unknown process")
 	}
 
+	d.logger.Info("nomad-driver-start-output", lager.Data{"job": proc.job})
+	defer d.logger.Info("nomad-driver-finish-output", lager.Data{"job": proc.job})
+
 	if proc.io.Stdin != nil {
 		go func() {
 			for {
@@ -179,18 +256,19 @@ func (d *Driver) EmitOutput(s Task_EmitOutputServer) error {
 	for {
 		msg, err := s.Recv()
 		if err != nil {
+			d.logger.Error("nomad-driver-output-error", err)
 			return err
 		}
 
-		spew.Dump(msg)
-		spew.Dump(msg.Data)
-
 		if msg.Finished {
+			d.logger.Info("nomad-driver-process-finished", lager.Data{"job": proc.job, "status": msg.FinishedStatus})
 			proc.setFinished(msg.FinishedStatus)
 			continue
 		}
 
 		if len(msg.Data) > 0 {
+			spew.Dump(msg.Data)
+
 			if msg.Stderr {
 				if proc.io.Stderr != nil {
 					proc.io.Stderr.Write(msg.Data)
@@ -202,4 +280,89 @@ func (d *Driver) EmitOutput(s Task_EmitOutputServer) error {
 			}
 		}
 	}
+}
+
+const chunkSize = 4096
+
+func (d *Driver) RequestVolume(req *VolumeRequest, stream Task_RequestVolumeServer) error {
+	md, ok := metadata.FromIncomingContext(stream.Context())
+	if !ok {
+		return errors.New("no stream provided")
+	}
+
+	ss, ok := md["stream"]
+	if !ok {
+		return errors.New("no stream in metadata")
+	}
+
+	id, err := strconv.Atoi(ss[0])
+	if err != nil {
+		return err
+	}
+
+	proc, ok := d.FindProcess(int64(id))
+
+	if !ok {
+		return errors.New("unknown process")
+	}
+
+	var found worker.InputSource
+
+	for _, input := range proc.Container.spec.Inputs {
+		if input.DestinationPath() == req.Name {
+			found = input
+			break
+		}
+	}
+
+	if found == nil {
+		return fmt.Errorf("Unable to find mount: %s", req.Name)
+	}
+
+	d.logger.Info("start-streaming-volume", lager.Data{"name": req.Name, "job": proc.job})
+	defer d.logger.Info("finished-streaming-volume", lager.Data{"name": req.Name, "job": proc.job})
+
+	vs := volStream{proc.job, stream}
+
+	return found.Source().StreamTo(vs)
+}
+
+type volStream struct {
+	job    string
+	stream Task_RequestVolumeServer
+}
+
+func (vs volStream) StreamIn(path string, r io.Reader) error {
+	f, err := os.Create(fmt.Sprintf("tmp/%s.tar", vs.job))
+	if err != nil {
+		panic(err)
+	}
+
+	defer f.Close()
+
+	buf := make([]byte, chunkSize)
+
+	for {
+		n, err := r.Read(buf)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+
+			return err
+		}
+
+		f.Write(buf[:n])
+
+		err = vs.stream.Send(&FileData{
+			Data: buf[:n],
+		})
+
+		if err != nil {
+			log.Printf("error sending data: %s", err)
+			return err
+		}
+	}
+
+	return nil
 }

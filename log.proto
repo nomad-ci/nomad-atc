@@ -27,8 +27,13 @@ message FileData {
   bytes data = 2;
 }
 
+message VolumeRequest {
+  string name = 1;
+}
+
 service Task {
   // Sends a greeting
   rpc EmitOutput(stream OutputData) returns (stream Actions) {}
   rpc ProvideFiles(stream FileData) returns (stream FileRequest) {}
+  rpc RequestVolume(VolumeRequest) returns (stream FileData) {}
 }

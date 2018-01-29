@@ -445,7 +445,7 @@ func (cmd *ATCCommand) constructMembers(
 
 	resourceFetcher := resourceFetcherFactory.FetcherFor(workerClient)
 	resourceFactory := resourceFactoryFactory.FactoryFor(workerClient)
-	engine := cmd.constructEngine(workerClient, resourceFetcher, resourceFactory, dbResourceCacheFactory, variablesFactory)
+	engine := cmd.constructEngine(nomadDriver, workerClient, resourceFetcher, resourceFactory, dbResourceCacheFactory, variablesFactory)
 
 	radarSchedulerFactory := pipelines.NewRadarSchedulerFactory(
 		resourceFactory,
@@ -749,7 +749,7 @@ func (cmd *ATCCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		}
 	})
 
-	nomadDriver, err := nomadatc.NewDriver("tmp")
+	nomadDriver, err := nomadatc.NewDriver(logger, "tmp")
 	if err != nil {
 		return nil, err
 	}
@@ -1058,6 +1058,7 @@ func (cmd *ATCCommand) configureAuthForDefaultTeam(teamFactory db.TeamFactory) e
 }
 
 func (cmd *ATCCommand) constructEngine(
+	driver *nomadatc.Driver,
 	workerClient worker.Client,
 	resourceFetcher resource.Fetcher,
 	resourceFactory resource.ResourceFactory,
@@ -1074,7 +1075,10 @@ func (cmd *ATCCommand) constructEngine(
 
 	execV2Engine := engine.NewExecEngine(
 		gardenFactory,
-		engine.NewBuildDelegateFactory(),
+		&nomadatc.BuildDelegateFactory{
+			Driver:     driver,
+			Downstream: engine.NewBuildDelegateFactory(),
+		},
 		cmd.ExternalURL.String(),
 	)
 

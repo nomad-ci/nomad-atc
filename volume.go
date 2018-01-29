@@ -55,8 +55,8 @@ func (v *Volume) StreamIn(path string, tarStream io.Reader) error {
 }
 
 func (v *Volume) StreamOut(path string) (io.ReadCloser, error) {
-	v.Logger.Debug("nomad-volume-stream-out", lager.Data{"path": path})
-	return v.Container.process.StreamFile(filepath.Join(v.path, path))
+	v.Logger.Info("nomad-volume-stream-out", lager.Data{"path": path})
+	return v.Container.process.StreamOut(filepath.Join(v.path, path))
 }
 
 func (v *Volume) COWStrategy() baggageclaim.COWStrategy {
