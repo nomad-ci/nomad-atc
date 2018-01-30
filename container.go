@@ -28,19 +28,20 @@ type Container struct {
 	Worker *Worker
 	Logger lager.Logger
 
+	handle  string
 	id      string
 	signals <-chan os.Signal
 	spec    worker.ContainerSpec
 	inputs  []worker.VolumeMount
 	mounts  []worker.VolumeMount
-	props   map[string]string
+	props   garden.Properties
 	md      db.ContainerMetadata
 
 	process *Process
 }
 
 func (c *Container) Handle() string {
-	panic("not implemented")
+	return c.handle
 }
 
 func (c *Container) Stop(kill bool) error {
@@ -59,8 +60,9 @@ func (c *Container) Stop(kill bool) error {
 	return err
 }
 
+// Doesn't appear to be used anymore
 func (c *Container) Info() (garden.ContainerInfo, error) {
-	panic("not implemented")
+	return garden.ContainerInfo{}, nil
 }
 
 func (c *Container) StreamIn(spec garden.StreamInSpec) error {
@@ -72,31 +74,31 @@ func (c *Container) StreamOut(spec garden.StreamOutSpec) (io.ReadCloser, error) 
 }
 
 func (c *Container) CurrentBandwidthLimits() (garden.BandwidthLimits, error) {
-	panic("not implemented")
+	return garden.BandwidthLimits{}, nil
 }
 
 func (c *Container) CurrentCPULimits() (garden.CPULimits, error) {
-	panic("not implemented")
+	return garden.CPULimits{}, nil
 }
 
 func (c *Container) CurrentDiskLimits() (garden.DiskLimits, error) {
-	panic("not implemented")
+	return garden.DiskLimits{}, nil
 }
 
 func (c *Container) CurrentMemoryLimits() (garden.MemoryLimits, error) {
-	panic("not implemented")
+	return garden.MemoryLimits{}, nil
 }
 
 func (c *Container) NetIn(hostPort uint32, containerPort uint32) (uint32, uint32, error) {
-	panic("not implemented")
+	return 0, 0, nil
 }
 
 func (c *Container) NetOut(netOutRule garden.NetOutRule) error {
-	panic("not implemented")
+	return nil
 }
 
 func (c *Container) BulkNetOut(netOutRules []garden.NetOutRule) error {
-	panic("not implemented")
+	return nil
 }
 
 func StringToPtr(s string) *string {
@@ -281,15 +283,15 @@ func (c *Container) Attach(processID string, io garden.ProcessIO) (garden.Proces
 }
 
 func (c *Container) Metrics() (garden.Metrics, error) {
-	panic("not implemented")
+	return garden.Metrics{}, nil
 }
 
 func (c *Container) SetGraceTime(graceTime time.Duration) error {
-	panic("not implemented")
+	return nil
 }
 
 func (c *Container) Properties() (garden.Properties, error) {
-	panic("not implemented")
+	return c.props, nil
 }
 
 var ErrNotSet = errors.New("not set")
@@ -307,7 +309,7 @@ func (c *Container) Property(name string) (string, error) {
 
 func (c *Container) SetProperty(name string, value string) error {
 	if c.props == nil {
-		c.props = make(map[string]string)
+		c.props = make(garden.Properties)
 	}
 
 	c.Logger.Debug("nomad-container-set-property", lager.Data{
@@ -321,11 +323,16 @@ func (c *Container) SetProperty(name string, value string) error {
 }
 
 func (c *Container) RemoveProperty(name string) error {
-	panic("not implemented")
+	if _, ok := c.props[name]; ok {
+		delete(c.props, name)
+		return nil
+	}
+
+	return ErrNotSet
 }
 
 func (c *Container) Destroy() error {
-	panic("not implemented")
+	return nil
 }
 
 func (c *Container) VolumeMounts() []worker.VolumeMount {
@@ -333,11 +340,11 @@ func (c *Container) VolumeMounts() []worker.VolumeMount {
 }
 
 func (c *Container) WorkerName() string {
-	panic("not implemented")
+	return c.Worker.Name()
 }
 
 func (c *Container) MarkAsHijacked() error {
-	panic("not implemented")
+	return nil
 }
 
 var _ = worker.Container(&Container{})
@@ -527,7 +534,7 @@ func (p *Process) Wait() (int, error) {
 }
 
 func (p *Process) SetTTY(garden.TTYSpec) error {
-	panic("not implemented")
+	return nil
 }
 
 func (p *Process) Signal(garden.Signal) error {

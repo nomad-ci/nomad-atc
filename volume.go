@@ -1,6 +1,7 @@
 package nomadatc
 
 import (
+	fmt "fmt"
 	io "io"
 	"path/filepath"
 
@@ -15,6 +16,8 @@ type Volume struct {
 	Source    worker.ArtifactSource
 	Container *Container
 
+	handle string
+
 	path string
 	priv bool
 
@@ -22,7 +25,7 @@ type Volume struct {
 }
 
 func (v *Volume) Handle() string {
-	panic("not implemented")
+	return v.handle
 }
 
 func (v *Volume) Path() string {
@@ -60,7 +63,7 @@ func (v *Volume) StreamOut(path string) (io.ReadCloser, error) {
 }
 
 func (v *Volume) COWStrategy() baggageclaim.COWStrategy {
-	panic("not implemented")
+	return baggageclaim.COWStrategy{}
 }
 
 func (v *Volume) InitializeResourceCache(cache *db.UsedResourceCache) error {
@@ -69,13 +72,15 @@ func (v *Volume) InitializeResourceCache(cache *db.UsedResourceCache) error {
 }
 
 func (v *Volume) InitializeTaskCache(lager.Logger, int, string, string, bool) error {
-	panic("not implemented")
+	v.Logger.Debug("nomad-initialize-task-cache-STUB")
+	return nil
 }
 
 func (v *Volume) CreateChildForContainer(db.CreatingContainer, string) (db.CreatingVolume, error) {
-	panic("not implemented")
+	v.Logger.Debug("nomad-initialize-create-child-for-conatiner-STUB")
+	return nil, fmt.Errorf("not implemented")
 }
 
 func (v *Volume) Destroy() error {
-	panic("not implemented")
+	return nil
 }

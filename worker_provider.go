@@ -1,6 +1,7 @@
 package nomadatc
 
 import (
+	fmt "fmt"
 	"os"
 	"time"
 
@@ -27,6 +28,8 @@ type WorkerProvider struct {
 	URL                   string
 	InternalIP            string
 	InternalPort          int
+
+	startedAt time.Time
 }
 
 func (w *WorkerProvider) nomadConfig() *nomad.Config {
@@ -36,6 +39,7 @@ func (w *WorkerProvider) nomadConfig() *nomad.Config {
 }
 
 func (w *WorkerProvider) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
+	w.startedAt = w.Clock.Now()
 	w.Logger.Info("nomad-worker-started",
 		lager.Data{
 			"internal-ip":   w.InternalIP,
@@ -143,6 +147,7 @@ func (w *Worker) FindOrCreateContainer(logger lager.Logger, signals <-chan os.Si
 		signals: signals,
 		spec:    spec,
 		md:      md,
+		handle:  fmt.Sprintf("%x", w.Provider.Driver.XID()),
 	}
 
 	for _, input := range spec.Inputs {
@@ -151,6 +156,7 @@ func (w *Worker) FindOrCreateContainer(logger lager.Logger, signals <-chan os.Si
 			Source:    input.Source(),
 			Container: cont,
 			path:      input.DestinationPath(),
+			handle:    fmt.Sprintf("%x", w.Provider.Driver.XID()),
 		}
 
 		mount := worker.VolumeMount{
@@ -182,15 +188,18 @@ func (w *Worker) FindOrCreateContainer(logger lager.Logger, signals <-chan os.Si
 }
 
 func (w *Worker) FindContainerByHandle(lager.Logger, int, string) (worker.Container, bool, error) {
-	panic("not implemented")
+	w.Logger.Debug("nomad-worker-container-by-handle-STUB")
+	return nil, false, nil
 }
 
 func (w *Worker) LookupVolume(lager.Logger, string) (worker.Volume, bool, error) {
-	panic("not implemented")
+	w.Logger.Debug("nomad-worker-lookup-volume-STUB")
+	return nil, false, nil
 }
 
 func (w *Worker) FindResourceTypeByPath(path string) (atc.WorkerResourceType, bool) {
-	panic("not implemented")
+	w.Logger.Debug("nomad-worker-find-resource-type-by-path-STUB")
+	return atc.WorkerResourceType{}, false
 }
 
 func (w *Worker) Satisfying(lager.Logger, worker.WorkerSpec, creds.VersionedResourceTypes) (worker.Worker, error) {
@@ -206,11 +215,12 @@ func (w *Worker) RunningWorkers(lager.Logger) ([]worker.Worker, error) {
 }
 
 func (w *Worker) ActiveContainers() int {
-	panic("not implemented")
+	w.Logger.Debug("nomad-worker-active-containers-STUB")
+	return 0
 }
 
 func (w *Worker) Description() string {
-	panic("not implemented")
+	return "nomad stub worker"
 }
 
 func (w *Worker) Name() string {
@@ -218,15 +228,17 @@ func (w *Worker) Name() string {
 }
 
 func (w *Worker) ResourceTypes() []atc.WorkerResourceType {
-	panic("not implemented")
+	w.Logger.Debug("nomad-worker-resource-types-STUB")
+	return nil
 }
 
 func (w *Worker) Tags() atc.Tags {
-	panic("not implemented")
+	w.Logger.Debug("nomad-worker-tags-STUB")
+	return nil
 }
 
 func (w *Worker) Uptime() time.Duration {
-	panic("not implemented")
+	return time.Since(w.Provider.startedAt)
 }
 
 func (w *Worker) IsOwnedByTeam() bool {
@@ -234,15 +246,17 @@ func (w *Worker) IsOwnedByTeam() bool {
 }
 
 func (w *Worker) IsVersionCompatible(lager.Logger, *version.Version) bool {
-	panic("not implemented")
+	return true
 }
 
 func (w *Worker) FindVolumeForResourceCache(logger lager.Logger, resourceCache *db.UsedResourceCache) (worker.Volume, bool, error) {
+	w.Logger.Debug("nomad-find-volume-for-resource-cache-STUB")
 	return nil, false, nil
 }
 
 func (w *Worker) FindVolumeForTaskCache(lager.Logger, int, int, string, string) (worker.Volume, bool, error) {
-	panic("not implemented")
+	w.Logger.Debug("nomad-find-volume-for-task-cache-STUB")
+	return nil, false, nil
 }
 
 func (w *Worker) GardenClient() garden.Client {
@@ -254,7 +268,7 @@ func (w *Worker) BaggageclaimClient() baggageclaim.Client {
 }
 
 func (w *Worker) EnsureCertsVolumeExists(logger lager.Logger) error {
-	panic("not implemented")
+	return nil
 }
 
 var _ = worker.Worker(&Worker{})
