@@ -19,6 +19,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	"github.com/nomad-ci/nomad-atc/assets"
+	"github.com/nomad-ci/nomad-atc/rpc"
 )
 
 type Driver struct {
@@ -60,7 +63,7 @@ func NewDriver(logger lager.Logger, port int) (*Driver, error) {
 
 	d.serv = grpc.NewServer()
 
-	RegisterTaskServer(d.serv, d)
+	rpc.RegisterTaskServer(d.serv, d)
 
 	return d, nil
 }
@@ -75,21 +78,15 @@ func (d *Driver) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
 	dhs := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			if req.URL.Path == "/_driver.tar.gz" {
-				f, err := os.Open("bin/driver.tar.gz")
+				bytes, err := assets.Asset("driver.tar.gz")
 				if err != nil {
 					http.Error(w, err.Error(), 500)
 					return
 				}
 
-				stat, err := f.Stat()
-				if err != nil {
-					http.Error(w, err.Error(), 500)
-				}
+				w.Header().Add("Content-Length", strconv.Itoa(len(bytes)))
 
-				w.Header().Add("Content-Length", strconv.Itoa(int(stat.Size())))
-
-				io.Copy(w, f)
-				f.Close()
+				w.Write(bytes)
 			} else {
 				http.NotFound(w, req)
 			}
@@ -176,7 +173,7 @@ func (d *Driver) FindProcess(stream int64) (*Process, bool) {
 	return proc, ok
 }
 
-func (d *Driver) ProvideFiles(s Task_ProvideFilesServer) error {
+func (d *Driver) ProvideFiles(s rpc.Task_ProvideFilesServer) error {
 	md, ok := metadata.FromIncomingContext(s.Context())
 	if !ok {
 		return errors.New("no stream provided")
@@ -213,7 +210,7 @@ func (d *Driver) ProvideFiles(s Task_ProvideFilesServer) error {
 		start := time.Now()
 		d.logger.Info("start-requesting-file", lager.Data{"job": proc.job, "path": req.Path})
 
-		err = s.Send(&FileRequest{
+		err = s.Send(&rpc.FileRequest{
 			Path: req.Path,
 		})
 
@@ -240,7 +237,7 @@ func (d *Driver) ProvideFiles(s Task_ProvideFilesServer) error {
 	return nil
 }
 
-func (d *Driver) EmitOutput(s Task_EmitOutputServer) error {
+func (d *Driver) EmitOutput(s rpc.Task_EmitOutputServer) error {
 	md, ok := metadata.FromIncomingContext(s.Context())
 	if !ok {
 		return errors.New("no stream provided")
@@ -271,14 +268,14 @@ func (d *Driver) EmitOutput(s Task_EmitOutputServer) error {
 				bytes := make([]byte, 1024)
 				n, err := proc.io.Stdin.Read(bytes)
 				if err != nil {
-					s.Send(&Actions{
+					s.Send(&rpc.Actions{
 						CloseInput: true,
 					})
 
 					return
 				}
 
-				err = s.Send(&Actions{
+				err = s.Send(&rpc.Actions{
 					Input: bytes[:n],
 				})
 
@@ -330,7 +327,7 @@ func (d *Driver) EmitOutput(s Task_EmitOutputServer) error {
 
 const chunkSize = 4096
 
-func (d *Driver) RequestVolume(req *VolumeRequest, stream Task_RequestVolumeServer) error {
+func (d *Driver) RequestVolume(req *rpc.VolumeRequest, stream rpc.Task_RequestVolumeServer) error {
 	md, ok := metadata.FromIncomingContext(stream.Context())
 	if !ok {
 		return errors.New("no stream provided")
@@ -375,7 +372,7 @@ func (d *Driver) RequestVolume(req *VolumeRequest, stream Task_RequestVolumeServ
 
 type volStream struct {
 	job    string
-	stream Task_RequestVolumeServer
+	stream rpc.Task_RequestVolumeServer
 }
 
 func (vs volStream) StreamIn(path string, r io.Reader) error {
@@ -391,7 +388,7 @@ func (vs volStream) StreamIn(path string, r io.Reader) error {
 			return err
 		}
 
-		err = vs.stream.Send(&FileData{
+		err = vs.stream.Send(&rpc.FileData{
 			Data: buf[:n],
 		})
 

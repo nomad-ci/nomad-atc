@@ -14,6 +14,7 @@ import (
 	"github.com/concourse/atc/db"
 	"github.com/concourse/atc/worker"
 	nomad "github.com/hashicorp/nomad/api"
+	"github.com/nomad-ci/nomad-atc/config"
 	context "golang.org/x/net/context"
 )
 
@@ -135,7 +136,7 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 
 	c.process = proc
 
-	var tc TaskConfig
+	var tc config.TaskConfig
 	tc.Stream = stream
 	tc.Host = fmt.Sprintf("%s:%d", c.Worker.Provider.InternalIP, c.Worker.Provider.InternalPort)
 	tc.Path = spec.Path

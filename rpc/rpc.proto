@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package nomadatc;
+package rpc;
 
 message OutputData {
   int64 stream = 1;

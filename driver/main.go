@@ -15,7 +15,8 @@ import (
 	"time"
 
 	"github.com/concourse/go-archive/tarfs"
-	nomadatc "github.com/nomad-ci/nomad-atc"
+	"github.com/nomad-ci/nomad-atc/config"
+	"github.com/nomad-ci/nomad-atc/rpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
@@ -24,7 +25,7 @@ func main() {
 	log.Printf("driver started")
 	path := os.Getenv("NOMAD_META_config")
 
-	var cfg nomadatc.TaskConfig
+	var cfg config.TaskConfig
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -59,7 +60,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	tc := nomadatc.NewTaskClient(conn)
+	tc := rpc.NewTaskClient(conn)
 
 	md := metadata.Pairs("stream", strconv.Itoa(int(cfg.Stream)))
 
@@ -69,7 +70,7 @@ func main() {
 		log.Printf("inputs to consume: %s", cfg.Inputs)
 
 		for _, name := range cfg.Inputs {
-			fd, err := tc.RequestVolume(ctx, &nomadatc.VolumeRequest{
+			fd, err := tc.RequestVolume(ctx, &rpc.VolumeRequest{
 				Name: name,
 			})
 
@@ -102,7 +103,7 @@ func main() {
 
 	var (
 		buffers sync.Pool
-		output  = make(chan *nomadatc.OutputData)
+		output  = make(chan *rpc.OutputData)
 		done    = make(chan bool, 2)
 	)
 
@@ -127,7 +128,7 @@ func main() {
 			if n > 0 {
 				os.Stdout.Write(bytes[:n])
 
-				output <- &nomadatc.OutputData{
+				output <- &rpc.OutputData{
 					Stream: cfg.Stream,
 					Data:   bytes[:n],
 				}
@@ -156,7 +157,7 @@ func main() {
 			if n > 0 {
 				os.Stderr.Write(bytes[:n])
 
-				output <- &nomadatc.OutputData{
+				output <- &rpc.OutputData{
 					Stream: cfg.Stream,
 					Stderr: true,
 					Data:   bytes[:n],
@@ -252,7 +253,7 @@ func main() {
 
 	if err != nil {
 		log.Printf("sending finished with status=1")
-		err = emit.Send(&nomadatc.OutputData{
+		err = emit.Send(&rpc.OutputData{
 			Finished:       true,
 			FinishedStatus: 1,
 		})
@@ -262,7 +263,7 @@ func main() {
 		}
 	} else {
 		log.Printf("sending finished with status=0")
-		err = emit.Send(&nomadatc.OutputData{
+		err = emit.Send(&rpc.OutputData{
 			Finished:       true,
 			FinishedStatus: 0,
 		})
@@ -326,7 +327,7 @@ func main() {
 				gzw.Close()
 			}
 
-			err = files.Send(&nomadatc.FileData{})
+			err = files.Send(&rpc.FileData{})
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -347,7 +348,7 @@ func main() {
 }
 
 type writerToData struct {
-	files nomadatc.Task_ProvideFilesClient
+	files rpc.Task_ProvideFilesClient
 }
 
 const chunkSize = 1024 * 32
@@ -366,7 +367,7 @@ func (w writerToData) Write(data []byte) (int, error) {
 			data = nil
 		}
 
-		err := w.files.Send(&nomadatc.FileData{
+		err := w.files.Send(&rpc.FileData{
 			Data: buf,
 		})
 
@@ -379,8 +380,8 @@ func (w writerToData) Write(data []byte) (int, error) {
 }
 
 type filedataToReader struct {
-	files nomadatc.Task_RequestVolumeClient
-	cont  *nomadatc.FileData
+	files rpc.Task_RequestVolumeClient
+	cont  *rpc.FileData
 }
 
 func (f filedataToReader) Read(b []byte) (int, error) {

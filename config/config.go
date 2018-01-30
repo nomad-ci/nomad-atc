@@ -1,4 +1,4 @@
-package nomadatc
+package config
 
 type TaskConfig struct {
 	Host           string   `json:"host"`
