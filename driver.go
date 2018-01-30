@@ -295,7 +295,7 @@ func (d *Driver) EmitOutput(s rpc.Task_EmitOutputServer) error {
 				}
 			}
 
-			if err != context.Canceled {
+			if err != context.Canceled && err != io.EOF {
 				d.logger.Error("nomad-driver-output-error", err)
 				return err
 			}
