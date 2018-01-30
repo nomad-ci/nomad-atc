@@ -14,9 +14,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/concourse/go-archive/tarfs"
 	"github.com/nomad-ci/nomad-atc/config"
 	"github.com/nomad-ci/nomad-atc/rpc"
+	"github.com/nomad-ci/nomad-atc/tarfs"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
