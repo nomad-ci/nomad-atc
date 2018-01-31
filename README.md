@@ -13,7 +13,7 @@ Our implementation of this interface returns variable implementations of the
 Worker, Container, Process, and Volume interfaces to provide versions that can run and
 shuffle data to jobs running in the nomad cluster.
 
-### Driver
+### [Driver](https://github.com/nomad-ci/nomad-atc/blob/master/driver/main.go)
 
 In order to have the containers perform various tasks related to the concourse
 workflows, we inject a special linux driver binary into each task and have nomad
