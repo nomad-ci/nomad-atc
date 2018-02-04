@@ -135,6 +135,9 @@ type ATCCommand struct {
 		URL           URLFlag           `long:"url"         description:"URL to access nomad cluster"`
 		InternalIP    IPFlag            `long:"internal-ip" description:"Internal IP of concourse for workers to connect back to"`
 		InternalPort  int               `long:"internal-port" description:"Port to use along with internal-ip for workers to connect back to" default:"12101"`
+
+		TaskMemory     int `long:"task-memory" description:"How many megabytes of memory to give to task type containers" default:"2048"`
+		ResourceMemory int `long:"resource-memory" description:"How many megabytes of memory to give to task type containers" default:"512"`
 	} `group:"Nomad Cluster" namespace:"nomad"`
 
 	Metrics struct {
@@ -409,6 +412,8 @@ func (cmd *ATCCommand) constructMembers(
 		URL:                   cmd.Nomad.URL.String(),
 		InternalIP:            internalHost,
 		InternalPort:          cmd.Nomad.InternalPort,
+		TaskMemory:            cmd.Nomad.TaskMemory,
+		ResourceMemory:        cmd.Nomad.ResourceMemory,
 	}
 
 	/*

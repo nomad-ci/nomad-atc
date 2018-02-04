@@ -14,6 +14,7 @@ import (
 
 	"code.cloudfoundry.org/lager"
 	"github.com/concourse/atc/worker"
+	lru "github.com/hashicorp/golang-lru"
 	context "golang.org/x/net/context"
 	grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -37,14 +38,22 @@ type Driver struct {
 
 	l       net.Listener
 	ldriver net.Listener
+
+	containers *lru.ARCCache
 }
 
 func NewDriver(logger lager.Logger, port int) (*Driver, error) {
+	c, err := lru.NewARC(1024)
+	if err != nil {
+		return nil, err
+	}
+
 	d := &Driver{
 		logger:     logger.Session("nomad-driver"),
 		streams:    make(map[int64]*Process),
 		nextStream: 1,
 		xid:        time.Now().Unix(),
+		containers: c,
 	}
 
 	l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
@@ -262,29 +271,78 @@ func (d *Driver) EmitOutput(s rpc.Task_EmitOutputServer) error {
 	d.logger.Info("nomad-driver-start-output", lager.Data{"job": proc.job})
 	defer d.logger.Info("nomad-driver-finish-output", lager.Data{"job": proc.job})
 
+	ctx, cancel := context.WithCancel(s.Context())
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		for {
+			select {
+			case act := <-proc.actions:
+				s.Send(act)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	if proc.io.Stdin != nil {
+		c := make(chan []byte)
+
 		go func() {
+			defer close(c)
+
 			for {
 				bytes := make([]byte, 1024)
 				n, err := proc.io.Stdin.Read(bytes)
 				if err != nil {
-					s.Send(&rpc.Actions{
-						CloseInput: true,
-					})
-
 					return
 				}
 
-				err = s.Send(&rpc.Actions{
-					Input: bytes[:n],
-				})
-
-				if err != nil {
+				select {
+				case c <- bytes[:n]:
+					// Double check, since we might be done AND have data
+					select {
+					case <-ctx.Done():
+						return
+					default:
+						// ok, keep going!
+					}
+				case <-ctx.Done():
+					// bye!
 					return
 				}
 			}
 		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case bytes := <-c:
+					if bytes == nil {
+						proc.actions <- &rpc.Actions{
+							CloseInput: true,
+						}
+						return
+					}
+
+					proc.actions <- &rpc.Actions{
+						Input: bytes,
+					}
+				}
+			}
+		}()
 	}
+
+	var finished bool
 
 	for {
 		msg, err := s.Recv()
@@ -297,16 +355,9 @@ func (d *Driver) EmitOutput(s rpc.Task_EmitOutputServer) error {
 
 			if err != context.Canceled && err != io.EOF {
 				d.logger.Error("nomad-driver-output-error", err)
-				return err
 			}
 
 			break
-		}
-
-		if msg.Finished {
-			d.logger.Info("nomad-driver-process-finished", lager.Data{"job": proc.job, "status": msg.FinishedStatus})
-			proc.setFinished(msg.FinishedStatus)
-			continue
 		}
 
 		if len(msg.Data) > 0 {
@@ -320,7 +371,26 @@ func (d *Driver) EmitOutput(s rpc.Task_EmitOutputServer) error {
 				}
 			}
 		}
+
+		if msg.Finished {
+			finished = true
+			d.logger.Info("nomad-driver-process-finished", lager.Data{"job": proc.job, "status": msg.FinishedStatus})
+			proc.setFinished(msg.FinishedStatus)
+		}
 	}
+
+	if !finished {
+		d.logger.Info("nomad-driver-process-last-resort-finished", lager.Data{"job": proc.job})
+		proc.setFinished(255)
+	}
+
+	// get our stdin goroutines to give up the goat
+	cancel()
+
+	// and wait for them
+	wg.Wait()
+
+	proc.closeActions()
 
 	return nil
 }

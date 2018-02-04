@@ -11,10 +11,16 @@ message OutputData {
   int32 finished_status = 5;
 }
 
+message WindowSize {
+  int32 rows = 1;
+  int32 columns = 2;
+}
+
 message Actions {
   int64 signal = 1;
   bytes input = 2;
   bool close_input = 3;
+  WindowSize winsz = 4;
 }
 
 message FileRequest {

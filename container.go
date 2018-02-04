@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	strconv "strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"code.cloudfoundry.org/garden"
@@ -15,6 +18,7 @@ import (
 	"github.com/concourse/atc/worker"
 	nomad "github.com/hashicorp/nomad/api"
 	"github.com/nomad-ci/nomad-atc/config"
+	"github.com/nomad-ci/nomad-atc/rpc"
 	context "golang.org/x/net/context"
 )
 
@@ -126,7 +130,31 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 		io:        io,
 		done:      make(chan struct{}, 1),
 		requests:  make(chan *StreamFileRequest, 1),
+		actions:   make(chan *rpc.Actions, 1),
 		buildId:   c.md.BuildID,
+		status:    -1,
+	}
+
+	var mem int
+
+	if c.md.Type == db.ContainerTypeTask {
+		mem = c.Worker.Provider.TaskMemory
+	} else {
+		mem = c.Worker.Provider.ResourceMemory
+	}
+
+	const nmEnv = "NOMAD_MEMORY="
+
+	for _, ev := range c.spec.Env {
+		if strings.HasPrefix(ev, nmEnv) {
+			i, err := strconv.Atoi(ev[len(nmEnv):])
+			if err == nil {
+				mem = i
+				c.Logger.Info("nomad-container-task-memory-override", lager.Data{"megabytes": mem})
+			} else {
+				c.Logger.Error("nomad-container-bad-task-memory-override", err)
+			}
+		}
 	}
 
 	stream := c.Worker.Provider.Register(proc)
@@ -144,7 +172,18 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 	tc.Path = spec.Path
 	tc.Args = spec.Args
 	tc.Dir = spec.Dir
-	tc.Env = spec.Env
+	tc.Env = c.spec.Env
+
+	if spec.TTY != nil {
+		tc.UseTTY = true
+
+		if spec.TTY.WindowSize != nil {
+			tc.WindowSize = &config.WindowSize{
+				Columns: spec.TTY.WindowSize.Columns,
+				Rows:    spec.TTY.WindowSize.Rows,
+			}
+		}
+	}
 
 	if c.md.Type == db.ContainerTypeGet ||
 		(c.md.Type == db.ContainerTypeTask && len(c.spec.Outputs) > 0) {
@@ -155,9 +194,13 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 		tc.Inputs = append(tc.Inputs, m.MountPath)
 	}
 
+	for _, path := range c.spec.Outputs {
+		tc.Outputs = append(tc.Outputs, path)
+	}
+
 	var (
 		dockerImage string
-		priv        bool
+		priv        = c.spec.ImageSpec.Privileged
 	)
 
 	ir := c.spec.ImageSpec.ImageResource
@@ -253,7 +296,7 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 						},
 						Resources: &nomad.Resources{
 							CPU:      IntToPtr(500),
-							MemoryMB: IntToPtr(256),
+							MemoryMB: IntToPtr(mem),
 						},
 					},
 				},
@@ -269,7 +312,7 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 
 	c.Logger.Info("nomad-registered-job", lager.Data{"job": *job.ID, "eval": resp.EvalID, "image": dockerImage})
 	go func() {
-		proc.monitor(resp.EvalID)
+		proc.monitor(resp.EvalID, io)
 	}()
 
 	return proc, nil
@@ -358,16 +401,22 @@ type Process struct {
 	spec      garden.ProcessSpec
 	io        garden.ProcessIO
 
-	status int
-	done   chan struct{}
+	mu       sync.Mutex
+	finished bool
+	status   int
+	done     chan struct{}
 
 	requests chan *StreamFileRequest
+	actions  chan *rpc.Actions
 
 	buildId int
 	cancel  func()
 }
 
-func (p *Process) monitor(evalid string) {
+func (p *Process) monitor(evalid string, io garden.ProcessIO) {
+	// Be sure that when monitor exists, we have set a finished state
+	defer p.setFinished(255)
+
 	n := p.api
 
 	var q nomad.QueryOptions
@@ -399,8 +448,8 @@ outer:
 
 	if id == "" {
 		p.logger.Error("nomad-process-allocation-failed", err, lager.Data{"job": p.job})
-		p.status = -1
-		close(p.done)
+		fmt.Fprintf(io.Stderr, "Unable to start nomad allocation: %s", err)
+		p.setFinished(255)
 		return
 	}
 
@@ -411,14 +460,17 @@ outer:
 
 	var alloc *nomad.Allocation
 
-	var seenRunning bool
+	var (
+		seenRunning   bool
+		seenEventTime int64
+	)
 
 	for {
 		alloc, meta, err = n.Allocations().Info(id, &q)
 		if err != nil {
 			p.logger.Error("nomad-process-allocation-info-failed", err)
-			p.status = -1
-			close(p.done)
+			fmt.Fprintf(io.Stderr, "Unable to start nomad allocation: %s", err)
+			p.setFinished(255)
 			return
 		}
 
@@ -427,9 +479,38 @@ outer:
 			"status": alloc.ClientStatus,
 		})
 
+		for _, ts := range alloc.TaskStates {
+			for _, ev := range ts.Events {
+				if ev.Time > seenEventTime {
+					fmt.Fprintf(io.Stderr, "\x1B[2mnomad: %s\x1B[0m\n", ev.DisplayMessage)
+					seenEventTime = ev.Time
+				}
+			}
+		}
+
 		switch alloc.ClientStatus {
 		case "running":
 			if !seenRunning {
+				node, _, err := n.Nodes().Info(alloc.NodeID, nil)
+				if err == nil {
+					values := []string{
+						fmt.Sprintf("id=%s", node.ID),
+						fmt.Sprintf("name='%s'", node.Name),
+					}
+
+					if ip, ok := node.Attributes["unique.network.ip-address"]; ok {
+						values = append(values, fmt.Sprintf("ip=%s", ip))
+					}
+
+					if dv, ok := node.Attributes["driver.docker.version"]; ok {
+						values = append(values, fmt.Sprintf("docker=%s", dv))
+					}
+
+					fmt.Fprintf(io.Stderr, "\x1B[2mnomad: node-info: %s\x1B[0m\n", strings.Join(values, " "))
+				} else {
+					fmt.Fprintf(io.Stderr, "\x1B[2mnomad: Error reading node info: %s\x1B[0m\n", err)
+				}
+
 				p.logger.Info("nomad-allocation-running", lager.Data{"alloc": id, "job": alloc.JobID})
 				seenRunning = true
 			}
@@ -437,10 +518,10 @@ outer:
 		case "complete", "failed":
 			if alloc.ClientStatus == "failed" {
 				p.logger.Error("nomad-allocation-failed", errors.New("allocation failed"), lager.Data{"job": p.job})
+				p.setFinished(255)
 			} else {
 				p.logger.Info("nomad-allocation-finished", lager.Data{"job": p.job, "exit": p.status})
 			}
-			// close(p.done)
 			return
 		}
 
@@ -449,6 +530,15 @@ outer:
 }
 
 func (p *Process) setFinished(code int32) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.finished {
+		return
+	}
+
+	p.finished = true
+
 	p.status = int(code)
 	close(p.done)
 }
@@ -533,13 +623,59 @@ func (p *Process) Wait() (int, error) {
 	return p.status, nil
 }
 
-func (p *Process) SetTTY(garden.TTYSpec) error {
+func (p *Process) closeActions() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.actions == nil {
+		return
+	}
+
+	close(p.actions)
+
+	p.actions = nil
+}
+
+func (p *Process) sendAction(act *rpc.Actions) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.actions == nil {
+		return
+	}
+
+	p.actions <- act
+}
+
+func (p *Process) SetTTY(spec garden.TTYSpec) error {
+	if spec.WindowSize == nil {
+		return nil
+	}
+
+	p.sendAction(&rpc.Actions{
+		Winsz: &rpc.WindowSize{
+			Rows:    int32(spec.WindowSize.Rows),
+			Columns: int32(spec.WindowSize.Columns),
+		},
+	})
+
 	return nil
 }
 
-func (p *Process) Signal(garden.Signal) error {
-	_, _, err := p.api.Jobs().Deregister(p.job, false, nil)
-	return err
+func (p *Process) Signal(sig garden.Signal) error {
+	switch sig {
+	case garden.SignalKill:
+		p.logger.Info("nomad-process-kill", lager.Data{"job": p.job})
+		_, _, err := p.api.Jobs().Deregister(p.job, false, &nomad.WriteOptions{})
+		return err
+	case garden.SignalTerminate:
+		p.logger.Info("nomad-process-send-terminate", lager.Data{"job": p.job})
+		p.sendAction(&rpc.Actions{
+			Signal: 15,
+		})
+	}
+
+	return nil
 }
 
 var _ = garden.Process(&Process{})

@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kr/pty"
 	"github.com/nomad-ci/nomad-atc/config"
 	"github.com/nomad-ci/nomad-atc/rpc"
 	"github.com/nomad-ci/nomad-atc/tarfs"
@@ -21,7 +23,12 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+// So defer's work
 func main() {
+	realmain()
+}
+
+func realmain() {
 	log.Printf("driver started")
 	path := os.Getenv("NOMAD_META_config")
 
@@ -88,17 +95,54 @@ func main() {
 		}
 	}
 
+	for _, path := range cfg.Outputs {
+		log.Printf("creating output dir: %s", path)
+		os.MkdirAll(path, 0755)
+	}
+
 	emit, err := tc.EmitOutput(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	cmd := exec.Command(cfg.Path, cfg.Args...)
-	cmd.Env = cfg.Env
+	// Inherit PATH through because different images setup PATH
+	// special and we want to honor it.
+	cmd.Env = append(cfg.Env, os.Environ()...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	var (
+		stdout    io.Reader
+		tty, lpty *os.File
+	)
+
+	if cfg.UseTTY {
+		lpty, tty, err = pty.Open()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		defer lpty.Close()
+
+		cmd.Stdout = tty
+
+		if winsz := cfg.WindowSize; winsz != nil {
+			pty.Setsize(lpty, &pty.Winsize{
+				Rows: uint16(winsz.Rows),
+				Cols: uint16(winsz.Columns),
+			})
+		}
+
+		stdout = lpty
+	} else {
+		stdout, err = cmd.StdoutPipe()
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	var (
@@ -109,11 +153,6 @@ func main() {
 
 	buffers.New = func() interface{} {
 		return make([]byte, 1024)
-	}
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		log.Fatal(err)
 	}
 
 	go func() {
@@ -172,7 +211,35 @@ func main() {
 
 	err = cmd.Start()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("error starting program: %s", err)
+
+		log.Printf("Unable to start requested program, sending error state to concourse")
+
+		emit.Send(&rpc.OutputData{
+			Stream:         cfg.Stream,
+			Stderr:         true,
+			Data:           []byte(fmt.Sprintf("Unable to run %s: %s\n", cfg.Path, err)),
+			Finished:       true,
+			FinishedStatus: 255,
+		})
+
+		emit.CloseSend()
+
+		for {
+			_, err := emit.Recv()
+			if err != nil {
+				break
+			}
+		}
+
+		conn.Close()
+
+		return
+	}
+
+	// So that only the created process owns it's tty
+	if tty != nil {
+		tty.Close()
 	}
 
 	var wg sync.WaitGroup
@@ -212,7 +279,17 @@ func main() {
 					sig = syscall.SIGTERM
 				}
 
+				log.Printf("sending process signal: %d", sig)
 				cmd.Process.Signal(sig)
+			}
+
+			if lpty != nil {
+				if winsz := msg.Winsz; winsz != nil {
+					pty.Setsize(lpty, &pty.Winsize{
+						Rows: uint16(winsz.Rows),
+						Cols: uint16(winsz.Columns),
+					})
+				}
 			}
 
 			for len(msg.Input) > 0 {
@@ -242,7 +319,10 @@ func main() {
 			if err != nil {
 				log.Fatal(err)
 			}
-			buffers.Put(data.Data)
+			// The :cap() slice is to re-expand the byte slice to
+			// it's full width now that we've used the data that was
+			// set.
+			buffers.Put(data.Data[:cap(data.Data)])
 		case <-done:
 			left--
 		}
@@ -301,7 +381,9 @@ func main() {
 
 			fileInfo, err := os.Stat(src)
 			if err != nil {
-				log.Fatal(err)
+				log.Printf("unable to stat %s: %s", src, err)
+				files.Send(&rpc.FileData{})
+				continue
 			}
 
 			var tarDir, tarPath string
@@ -320,7 +402,9 @@ func main() {
 
 			err = tarfs.Compress(out, tarDir, tarPath)
 			if err != nil {
-				log.Fatal(err)
+				log.Printf("unable to tar  %s: %s", tarDir, err)
+				files.Send(&rpc.FileData{})
+				continue
 			}
 
 			if gzw != nil {

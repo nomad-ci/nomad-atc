@@ -28,6 +28,8 @@ type WorkerProvider struct {
 	URL                   string
 	InternalIP            string
 	InternalPort          int
+	TaskMemory            int
+	ResourceMemory        int
 
 	startedAt time.Time
 }
@@ -117,6 +119,27 @@ func (w *WorkerProvider) RunningWorkers(logger lager.Logger) ([]worker.Worker, e
 
 func (w *WorkerProvider) FindWorkerForContainer(logger lager.Logger, teamID int, handle string) (worker.Worker, bool, error) {
 	w.Logger.Debug("nomad-find-worker-for-container")
+
+	_, ok := w.Driver.containers.Get(handle)
+	if !ok {
+		return nil, false, nil
+	}
+
+	savedWorkers, err := w.WorkerFactory.Workers()
+	if err != nil {
+		return nil, false, err
+	}
+
+	tikTok := c.NewClock()
+
+	for _, savedWorker := range savedWorkers {
+		if savedWorker.State() != db.WorkerStateRunning {
+			continue
+		}
+
+		return w.NewGardenWorker(logger, tikTok, savedWorker), true, nil
+	}
+
 	return nil, false, nil
 }
 
@@ -183,13 +206,19 @@ func (w *Worker) FindOrCreateContainer(logger lager.Logger, signals <-chan os.Si
 		cont.mounts = append(cont.mounts, mount)
 	}
 
+	w.Provider.Driver.containers.Add(cont.handle, cont)
+
 	logger.Debug("nomad-find-or-create-container")
 	return cont, nil
 }
 
-func (w *Worker) FindContainerByHandle(lager.Logger, int, string) (worker.Container, bool, error) {
-	w.Logger.Debug("nomad-worker-container-by-handle-STUB")
-	return nil, false, nil
+func (w *Worker) FindContainerByHandle(logger lager.Logger, teamID int, handle string) (worker.Container, bool, error) {
+	cont, ok := w.Provider.Driver.containers.Get(handle)
+	if !ok {
+		return nil, false, nil
+	}
+
+	return cont.(*Container), true, nil
 }
 
 func (w *Worker) LookupVolume(lager.Logger, string) (worker.Volume, bool, error) {
