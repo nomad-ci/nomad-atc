@@ -2,7 +2,18 @@ build:
 	GOOS=linux go build -o bin/driver driver/main.go
 	cd bin; tar czvf driver.tar.gz driver
 	cd bin; go-bindata -o ../assets/bindata.go -pkg assets driver.tar.gz
-	go build -o bin/atc ./cmd/atc
+	go build -v -o bin/atc ./cmd/atc
+
+build-linux:
+	GOOS=linux go build -o bin/driver driver/main.go
+	cd bin; tar czvf driver.tar.gz driver
+	cd bin; go-bindata -o ../assets/bindata.go -pkg assets driver.tar.gz
+	GOOS=linux go build -o bin/atc-linux ./cmd/atc
+
+build-driver:
+	GOOS=linux go build -o bin/driver driver/main.go
+	cd bin; tar czvf driver.tar.gz driver
+	cd bin; go-bindata -o ../assets/bindata.go -pkg assets driver.tar.gz
 
 test-atc:
 	go build -o bin/atc ./cmd/atc
