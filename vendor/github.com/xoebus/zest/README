@@ -1,0 +1,28 @@
+
+                                             _
+                                _______  ___| |_
+                               |_  / _ \/ __| __|
+                                / /  __/\__ \ |_
+                               /___\___||___/\__|
+
+                  a yeller sink for the lager logging library
+
+= about
+
+Zest will emit errors to Yeller when you log at the error level while using the
+Lager logging library.
+
+= usage
+
+    sink := zest.NewYellerSink("YELLER_API_KEY", "staging")
+    logger.RegisterSink(sink)
+
+    // ...
+
+= links
+
+Lager - A logging library for Go.
+https://github.com/pivotal-golang/lager
+
+Yeller - The Clojure Error Tracker
+http://yellerapp.com/
