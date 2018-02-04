@@ -1,0 +1,119 @@
+# Gopkg.toml example
+#
+# Refer to https://github.com/golang/dep/blob/master/docs/Gopkg.toml.md
+# for detailed Gopkg.toml documentation.
+#
+# required = ["github.com/user/thing/cmd/thing"]
+# ignored = ["github.com/user/project/pkgX", "bitbucket.org/user/project/pkgA/pkgY"]
+#
+# [[constraint]]
+#   name = "github.com/user/project"
+#   version = "1.0.0"
+#
+# [[constraint]]
+#   name = "github.com/user/project2"
+#   branch = "dev"
+#   source = "github.com/myfork/project2"
+#
+# [[override]]
+#   name = "github.com/x/y"
+#   version = "2.4.0"
+#
+# [prune]
+#   non-go = false
+#   go-tests = true
+#   unused-packages = true
+
+
+[[constraint]]
+  revision = "e0835a7"
+  name = "code.cloudfoundry.org/clock"
+
+[[constraint]]
+  revision = "go-wshd-880-ge9a70ee"
+  name = "code.cloudfoundry.org/garden"
+
+[[constraint]]
+  name = "code.cloudfoundry.org/lager"
+  version = "1.0.0"
+
+[[constraint]]
+  name = "github.com/concourse/atc"
+  source = "github.com/evanphx/atc"
+  branch = "tweaks"
+
+[[constraint]]
+  name = "github.com/concourse/baggageclaim"
+  revision = "c235a04"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/concourse/go-archive"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/cppforlife/go-semi-semantic"
+
+[[constraint]]
+  name = "github.com/dgrijalva/jwt-go"
+  version = "3.1.0"
+
+[[constraint]]
+  name = "github.com/fatih/color"
+  version = "1.5.0"
+
+[[constraint]]
+  name = "github.com/gogo/protobuf"
+  version = "1.0.0"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/hashicorp/go-multierror"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/hashicorp/golang-lru"
+
+[[constraint]]
+  name = "github.com/hashicorp/nomad"
+  version = "0.7.1"
+
+[[constraint]]
+  name = "github.com/jessevdk/go-flags"
+  version = "1.3.0"
+
+[[constraint]]
+  name = "github.com/kr/pty"
+  version = "1.1.1"
+
+[[constraint]]
+  name = "github.com/onsi/ginkgo"
+  version = "1.4.0"
+
+[[constraint]]
+  name = "github.com/onsi/gomega"
+  version = "1.3.0"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/tedsuo/ifrit"
+
+[[constraint]]
+  branch = "master"
+  name = "github.com/xoebus/zest"
+
+[[constraint]]
+  branch = "master"
+  name = "golang.org/x/net"
+
+[[constraint]]
+  name = "google.golang.org/grpc"
+  version = "1.9.2"
+
+[[override]]
+  name = "github.com/xanzy/go-gitlab"
+  version = "v0.5.1"
+
+[prune]
+  go-tests = true
+  unused-packages = true
