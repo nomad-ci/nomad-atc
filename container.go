@@ -479,6 +479,7 @@ outer:
 	var (
 		seenRunning   bool
 		seenEventTime int64
+		seenNode      bool
 	)
 
 	for {
@@ -495,6 +496,29 @@ outer:
 			"status": alloc.ClientStatus,
 		})
 
+		if !seenNode && alloc.NodeID != "" {
+			seenNode = true
+			node, _, err := n.Nodes().Info(alloc.NodeID, nil)
+			if err == nil {
+				values := []string{
+					fmt.Sprintf("id=%s", node.ID),
+					fmt.Sprintf("name='%s'", node.Name),
+				}
+
+				if ip, ok := node.Attributes["unique.network.ip-address"]; ok {
+					values = append(values, fmt.Sprintf("ip=%s", ip))
+				}
+
+				if dv, ok := node.Attributes["driver.docker.version"]; ok {
+					values = append(values, fmt.Sprintf("docker=%s", dv))
+				}
+
+				fmt.Fprintf(io.Stderr, "\x1B[2mnomad: node-info: %s\x1B[0m\n", strings.Join(values, " "))
+			} else {
+				fmt.Fprintf(io.Stderr, "\x1B[2mnomad: Error reading node info: %s\x1B[0m\n", err)
+			}
+		}
+
 		for _, ts := range alloc.TaskStates {
 			for _, ev := range ts.Events {
 				if ev.Time > seenEventTime {
@@ -507,26 +531,6 @@ outer:
 		switch alloc.ClientStatus {
 		case "running":
 			if !seenRunning {
-				node, _, err := n.Nodes().Info(alloc.NodeID, nil)
-				if err == nil {
-					values := []string{
-						fmt.Sprintf("id=%s", node.ID),
-						fmt.Sprintf("name='%s'", node.Name),
-					}
-
-					if ip, ok := node.Attributes["unique.network.ip-address"]; ok {
-						values = append(values, fmt.Sprintf("ip=%s", ip))
-					}
-
-					if dv, ok := node.Attributes["driver.docker.version"]; ok {
-						values = append(values, fmt.Sprintf("docker=%s", dv))
-					}
-
-					fmt.Fprintf(io.Stderr, "\x1B[2mnomad: node-info: %s\x1B[0m\n", strings.Join(values, " "))
-				} else {
-					fmt.Fprintf(io.Stderr, "\x1B[2mnomad: Error reading node info: %s\x1B[0m\n", err)
-				}
-
 				p.logger.Info("nomad-allocation-running", lager.Data{"alloc": id, "job": alloc.JobID})
 				seenRunning = true
 			}
