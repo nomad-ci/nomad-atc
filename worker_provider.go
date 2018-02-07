@@ -30,6 +30,8 @@ type WorkerProvider struct {
 	InternalPort          int
 	TaskMemory            int
 	ResourceMemory        int
+	TaskCPU               int
+	ResourceCPU           int
 
 	startedAt time.Time
 }

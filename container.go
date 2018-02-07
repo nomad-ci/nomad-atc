@@ -135,12 +135,14 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 		status:    -1,
 	}
 
-	var mem int
+	var mem, cpu int
 
 	if c.md.Type == db.ContainerTypeTask {
 		mem = c.Worker.Provider.TaskMemory
+		cpu = c.Worker.Provider.TaskCPU
 	} else {
 		mem = c.Worker.Provider.ResourceMemory
+		cpu = c.Worker.Provider.ResourceCPU
 	}
 
 	const nmEnv = "NOMAD_MEMORY="
@@ -150,9 +152,23 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 			i, err := strconv.Atoi(ev[len(nmEnv):])
 			if err == nil {
 				mem = i
-				c.Logger.Info("nomad-container-task-memory-override", lager.Data{"megabytes": mem})
+				c.Logger.Info("nomad-container-plan-memory-override", lager.Data{"megabytes": mem})
 			} else {
-				c.Logger.Error("nomad-container-bad-task-memory-override", err)
+				c.Logger.Error("nomad-container-bad-plan-memory-override", err)
+			}
+		}
+	}
+
+	const ncEnv = "NOMAD_CPU="
+
+	for _, ev := range c.spec.Env {
+		if strings.HasPrefix(ev, ncEnv) {
+			i, err := strconv.Atoi(ev[len(ncEnv):])
+			if err == nil {
+				cpu = i
+				c.Logger.Info("nomad-container-plan-cpu-override", lager.Data{"cpu": cpu})
+			} else {
+				c.Logger.Error("nomad-container-bad-plan-memory-override", err)
 			}
 		}
 	}
@@ -295,7 +311,7 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 							},
 						},
 						Resources: &nomad.Resources{
-							CPU:      IntToPtr(500),
+							CPU:      IntToPtr(cpu),
 							MemoryMB: IntToPtr(mem),
 						},
 					},

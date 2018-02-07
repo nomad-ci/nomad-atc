@@ -137,7 +137,9 @@ type ATCCommand struct {
 		InternalPort  int               `long:"internal-port" description:"Port to use along with internal-ip for workers to connect back to" default:"12101"`
 
 		TaskMemory     int `long:"task-memory" description:"How many megabytes of memory to give to task type containers" default:"2048"`
-		ResourceMemory int `long:"resource-memory" description:"How many megabytes of memory to give to task type containers" default:"512"`
+		ResourceMemory int `long:"resource-memory" description:"How many megabytes of memory to give to resource type containers" default:"512"`
+		TaskCPU        int `long:"task-cpu" description:"How many cpu shares to give to task type containers" default:"1000"`
+		ResourceCPU    int `long:"resource-cpu" description:"How many cpu shares to give to resource type containers" default:"500"`
 	} `group:"Nomad Cluster" namespace:"nomad"`
 
 	Metrics struct {
@@ -414,6 +416,8 @@ func (cmd *ATCCommand) constructMembers(
 		InternalPort:          cmd.Nomad.InternalPort,
 		TaskMemory:            cmd.Nomad.TaskMemory,
 		ResourceMemory:        cmd.Nomad.ResourceMemory,
+		TaskCPU:               cmd.Nomad.TaskCPU,
+		ResourceCPU:           cmd.Nomad.ResourceCPU,
 	}
 
 	/*
