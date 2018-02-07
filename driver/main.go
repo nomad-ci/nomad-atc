@@ -1,7 +1,6 @@
 package main
 
 import (
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/golang/snappy"
 	"github.com/kr/pty"
 	"github.com/nomad-ci/nomad-atc/config"
 	"github.com/nomad-ci/nomad-atc/rpc"
@@ -73,36 +73,63 @@ func realmain() {
 
 	ctx := metadata.NewOutgoingContext(context.Background(), md)
 
+	emit, err := tc.EmitOutput(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	if len(cfg.Inputs) > 0 {
 		log.Printf("inputs to consume: %s", cfg.Inputs)
 
 		for _, name := range cfg.Inputs {
+			start := time.Now()
+
 			fd, err := tc.RequestVolume(ctx, &rpc.VolumeRequest{
 				Name: name,
 			})
 
-			gzr, err := gzip.NewReader(filedataToReader{files: fd})
+			fdtr := &filedataToReader{files: fd}
+
+			sr := snappy.NewReader(fdtr)
+
+			log.Printf("extracting to %s", name)
+			err = tarfs.Extract(sr, name)
 			if err != nil {
 				log.Fatal(err)
 			}
 
-			log.Printf("extracting to %s", name)
-			err = tarfs.Extract(gzr, name)
-			gzr.Close()
-			if err != nil {
-				log.Fatal(err)
+			dur := time.Since(start)
+
+			bps := float64(fdtr.totalBytes) / dur.Seconds()
+
+			unit := "B"
+
+			switch {
+			case bps > 1024*1024:
+				bps = bps / (1024 * 1024)
+				unit = "MB"
+			case bps > 1024:
+				bps = bps / 1024
+				unit = "KB"
+			default:
 			}
+
+			data := fmt.Sprintf("driver: read '%s' at %.2f %s/s (%d in %s)", name, bps, unit, fdtr.totalBytes, dur)
+
+			emit.Send(&rpc.OutputData{
+				Stream:     cfg.Stream,
+				StreamType: rpc.DRIVER,
+				Data:       []byte(data),
+			})
+
+			fmt.Println(data)
+
 		}
 	}
 
 	for _, path := range cfg.Outputs {
 		log.Printf("creating output dir: %s", path)
 		os.MkdirAll(path, 0755)
-	}
-
-	emit, err := tc.EmitOutput(ctx)
-	if err != nil {
-		log.Fatal(err)
 	}
 
 	cmd := exec.Command(cfg.Path, cfg.Args...)
@@ -388,14 +415,14 @@ func realmain() {
 			}
 
 			var tarDir, tarPath string
-			var gzw *gzip.Writer
+			var sw *snappy.Writer
 
 			if fileInfo.IsDir() {
 				tarDir = src
 				tarPath = "."
 
-				gzw = gzip.NewWriter(out)
-				out = gzw
+				sw = snappy.NewBufferedWriter(out)
+				out = sw
 			} else {
 				tarDir = filepath.Dir(src)
 				tarPath = filepath.Base(src)
@@ -408,8 +435,8 @@ func realmain() {
 				continue
 			}
 
-			if gzw != nil {
-				gzw.Close()
+			if sw != nil {
+				sw.Close()
 			}
 
 			err = files.Send(&rpc.FileData{})
@@ -467,9 +494,13 @@ func (w writerToData) Write(data []byte) (int, error) {
 type filedataToReader struct {
 	files rpc.Task_RequestVolumeClient
 	cont  *rpc.FileData
+
+	totalBytes int
 }
 
-func (f filedataToReader) Read(b []byte) (int, error) {
+const showEveryBytes = 1024 * 1024
+
+func (f *filedataToReader) Read(b []byte) (int, error) {
 	if f.cont != nil {
 		if len(b) < len(f.cont.Data) {
 			copy(b, f.cont.Data[:len(b)])
@@ -487,6 +518,8 @@ func (f filedataToReader) Read(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+
+	f.totalBytes += len(data.Data)
 
 	if len(data.Data) == 0 {
 		return 0, io.EOF
