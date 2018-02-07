@@ -2,9 +2,15 @@ syntax = "proto3";
 
 package rpc;
 
+enum StreamType {
+  STDOUT = 0;
+  STDERR = 1;
+  DRIVER = 2;
+  }
+
 message OutputData {
   int64 stream = 1;
-  bool stderr = 2;
+  StreamType stream_type = 2;
   bytes data = 3;
 
   bool finished = 4;

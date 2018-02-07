@@ -168,8 +168,9 @@ func realmain() {
 				os.Stdout.Write(bytes[:n])
 
 				output <- &rpc.OutputData{
-					Stream: cfg.Stream,
-					Data:   bytes[:n],
+					Stream:     cfg.Stream,
+					StreamType: rpc.STDOUT,
+					Data:       bytes[:n],
 				}
 			}
 
@@ -197,9 +198,9 @@ func realmain() {
 				os.Stderr.Write(bytes[:n])
 
 				output <- &rpc.OutputData{
-					Stream: cfg.Stream,
-					Stderr: true,
-					Data:   bytes[:n],
+					Stream:     cfg.Stream,
+					StreamType: rpc.STDERR,
+					Data:       bytes[:n],
 				}
 			}
 
@@ -217,7 +218,7 @@ func realmain() {
 
 		emit.Send(&rpc.OutputData{
 			Stream:         cfg.Stream,
-			Stderr:         true,
+			StreamType:     rpc.STDERR,
 			Data:           []byte(fmt.Sprintf("Unable to run %s: %s\n", cfg.Path, err)),
 			Finished:       true,
 			FinishedStatus: 255,

@@ -361,13 +361,18 @@ func (d *Driver) EmitOutput(s rpc.Task_EmitOutputServer) error {
 		}
 
 		if len(msg.Data) > 0 {
-			if msg.Stderr {
+			switch msg.StreamType {
+			case rpc.STDERR:
 				if proc.io.Stderr != nil {
 					proc.io.Stderr.Write(msg.Data)
 				}
-			} else {
+			case rpc.STDOUT:
 				if proc.io.Stdout != nil {
 					proc.io.Stdout.Write(msg.Data)
+				}
+			case rpc.DRIVER:
+				if proc.io.Stderr != nil {
+					fmt.Fprintf(proc.io.Stderr, "\x1B[2mnomad: %s\x1B[0m\n", string(msg.Data))
 				}
 			}
 		}
