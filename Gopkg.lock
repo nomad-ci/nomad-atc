@@ -191,7 +191,7 @@
     "worker/transport",
     "wrappa"
   ]
-  revision = "e77e326927827e75167d7335b82bd32eefca41e9"
+  revision = "514b2d900915d804eb9ca4fcee6910e1700096d9"
   source = "github.com/evanphx/atc"
 
 [[projects]]
@@ -993,6 +993,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "e99b6cd7fe6f739847b98cbc917ca85b99121de946ed14449d33d56e8db1d58c"
+  inputs-digest = "def4e39596fcf599c54ffccf319a32279628d287a56baee5c8c22693104fdb53"
   solver-name = "gps-cdcl"
   solver-version = 1
