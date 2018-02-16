@@ -53,10 +53,13 @@ func (w *WorkerProvider) Run(signals <-chan os.Signal, ready chan<- struct{}) er
 
 	workerInfo := atc.Worker{
 		ActiveContainers: 0,
-		ResourceTypes:    CurrentResources,
 		Platform:         "linux",
 		Tags:             []string{},
 		Name:             "nomad",
+	}
+
+	for _, br := range CurrentResources {
+		workerInfo.ResourceTypes = append(workerInfo.ResourceTypes, br.WorkerResourceType)
 	}
 
 	_, err := w.WorkerFactory.SaveWorker(workerInfo, 30*time.Second)

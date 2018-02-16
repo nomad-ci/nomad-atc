@@ -2,27 +2,74 @@ package nomadatc
 
 import "github.com/concourse/atc"
 
-var CurrentResources = []atc.WorkerResourceType{
-	{"archive", "concourse/archive-resource", "", false},
-	{"bosh-deployment", "concourse/bosh-deployment-resource", "", false},
-	{"bosh-io-release", "concourse/bosh-io-release-resource", "", false},
-	{"bosh-io-stemcell", "concourse/bosh-io-stemcell-resource", "", false},
-	{"cf", "concourse/cf-resource", "", false},
-	{"docker-image", "concourse/docker-image-resource", "", true},
-	{"git", "concourse/git-resource", "", false},
-	{"github-release", "concourse/github-release-resource", "", false},
-	{"hg", "concourse/hg-resource", "", false},
-	{"pool", "concourse/pool-resource", "", false},
-	{"s3", "concourse/s3-resource", "", false},
-	{"semver", "concourse/semver-resource", "", false},
-	{"time", "concourse/time-resource", "", false},
-	{"tracker", "concourse/tracker-resource", "", false},
+type WorkerResourceType struct {
+	atc.WorkerResourceType
+	Memory int
 }
 
-var AllResources map[string]atc.WorkerResourceType
+var CurrentResources = []WorkerResourceType{
+	{
+		WorkerResourceType: atc.WorkerResourceType{"archive", "concourse/archive-resource", "", false},
+		Memory:             512,
+	},
+	{
+		WorkerResourceType: atc.WorkerResourceType{"bosh-deployment", "concourse/bosh-deployment-resource", "", false},
+		Memory:             512,
+	},
+	{
+		WorkerResourceType: atc.WorkerResourceType{"bosh-io-release", "concourse/bosh-io-release-resource", "", false},
+		Memory:             512,
+	},
+	{
+		WorkerResourceType: atc.WorkerResourceType{"bosh-io-stemcell", "concourse/bosh-io-stemcell-resource", "", false},
+		Memory:             512,
+	},
+	{
+		WorkerResourceType: atc.WorkerResourceType{"cf", "concourse/cf-resource", "", false},
+		Memory:             512,
+	},
+	{
+		WorkerResourceType: atc.WorkerResourceType{"docker-image", "quay.io/hashicorp/docker-image-resource", "", true},
+		Memory:             4096,
+	},
+	{
+		WorkerResourceType: atc.WorkerResourceType{"git", "concourse/git-resource", "", false},
+		Memory:             512,
+	},
+	{
+		WorkerResourceType: atc.WorkerResourceType{"github-release", "concourse/github-release-resource", "", false},
+		Memory:             512,
+	},
+	{
+		WorkerResourceType: atc.WorkerResourceType{"hg", "concourse/hg-resource", "", false},
+		Memory:             512,
+	},
+	{
+		WorkerResourceType: atc.WorkerResourceType{"pool", "concourse/pool-resource", "", false},
+		Memory:             512,
+	},
+	{
+		WorkerResourceType: atc.WorkerResourceType{"s3", "concourse/s3-resource", "", false},
+		Memory:             512,
+	},
+	{
+		WorkerResourceType: atc.WorkerResourceType{"semver", "concourse/semver-resource", "", false},
+		Memory:             256,
+	},
+	{
+		WorkerResourceType: atc.WorkerResourceType{"time", "concourse/time-resource", "", false},
+		Memory:             256,
+	},
+	{
+		WorkerResourceType: atc.WorkerResourceType{"tracker", "concourse/tracker-resource", "", false},
+		Memory:             512,
+	},
+}
+
+var AllResources map[string]WorkerResourceType
 
 func init() {
-	AllResources = make(map[string]atc.WorkerResourceType)
+	AllResources = make(map[string]WorkerResourceType)
 
 	for _, br := range CurrentResources {
 		AllResources[br.Type] = br

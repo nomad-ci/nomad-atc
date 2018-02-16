@@ -228,6 +228,11 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 			}
 
 			priv = br.Privileged
+
+			if br.Memory != 0 {
+				mem = br.Memory
+			}
+
 		} else {
 			fmt.Errorf("unsupported resource: %s", c.spec.ImageSpec.ResourceType)
 		}
