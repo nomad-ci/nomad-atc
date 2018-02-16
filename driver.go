@@ -342,8 +342,6 @@ func (d *Driver) EmitOutput(s rpc.Task_EmitOutputServer) error {
 		}()
 	}
 
-	var finished bool
-
 	for {
 		msg, err := s.Recv()
 		if err != nil {
@@ -378,15 +376,9 @@ func (d *Driver) EmitOutput(s rpc.Task_EmitOutputServer) error {
 		}
 
 		if msg.Finished {
-			finished = true
 			d.logger.Info("nomad-driver-process-finished", lager.Data{"job": proc.job, "status": msg.FinishedStatus})
 			proc.setFinished(msg.FinishedStatus)
 		}
-	}
-
-	if !finished {
-		d.logger.Info("nomad-driver-process-last-resort-finished", lager.Data{"job": proc.job})
-		proc.setFinished(255)
 	}
 
 	// get our stdin goroutines to give up the goat

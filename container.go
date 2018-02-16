@@ -470,7 +470,7 @@ outer:
 	if id == "" {
 		p.logger.Error("nomad-process-allocation-failed", err, lager.Data{"job": p.job})
 		fmt.Fprintf(io.Stderr, "Unable to start nomad allocation: %s", err)
-		p.setFinished(255)
+		p.setStatus(255)
 		return
 	}
 
@@ -492,7 +492,7 @@ outer:
 		if err != nil {
 			p.logger.Error("nomad-process-allocation-info-failed", err)
 			fmt.Fprintf(io.Stderr, "Unable to start nomad allocation: %s", err)
-			p.setFinished(255)
+			p.setStatus(255)
 			return
 		}
 
@@ -543,15 +543,23 @@ outer:
 		case "complete", "failed":
 			if alloc.ClientStatus == "failed" {
 				p.logger.Error("nomad-allocation-failed", errors.New("allocation failed"), lager.Data{"job": p.job})
-				p.setFinished(255)
+				p.setStatus(255)
 			} else {
 				p.logger.Info("nomad-allocation-finished", lager.Data{"job": p.job, "exit": p.status})
 			}
+
 			return
 		}
 
 		q.WaitIndex = meta.LastIndex
 	}
+}
+
+func (p *Process) setStatus(code int32) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.status = int(code)
 }
 
 func (p *Process) setFinished(code int32) {
@@ -564,7 +572,10 @@ func (p *Process) setFinished(code int32) {
 
 	p.finished = true
 
-	p.status = int(code)
+	if p.status < 0 {
+		p.status = int(code)
+	}
+
 	close(p.done)
 }
 
