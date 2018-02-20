@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -81,50 +82,61 @@ func realmain() {
 	if len(cfg.Inputs) > 0 {
 		log.Printf("inputs to consume: %s", cfg.Inputs)
 
+		var wg sync.WaitGroup
+
+		wg.Add(len(cfg.Inputs))
+
+		total := new(int64)
+		start := time.Now()
+
 		for _, name := range cfg.Inputs {
-			start := time.Now()
+			go func(name string) {
+				defer wg.Done()
 
-			fd, err := tc.RequestVolume(ctx, &rpc.VolumeRequest{
-				Name: name,
-			})
+				fd, err := tc.RequestVolume(ctx, &rpc.VolumeRequest{
+					Name: name,
+				})
 
-			fdtr := &filedataToReader{files: fd}
+				fdtr := &filedataToReader{files: fd}
 
-			sr := snappy.NewReader(fdtr)
+				sr := snappy.NewReader(fdtr)
 
-			log.Printf("extracting to %s", name)
-			err = tarfs.Extract(sr, name)
-			if err != nil {
-				log.Fatal(err)
-			}
+				err = tarfs.Extract(sr, name)
+				if err != nil {
+					log.Fatal(err)
+				}
 
-			dur := time.Since(start)
-
-			bps := float64(fdtr.totalBytes) / dur.Seconds()
-
-			unit := "B"
-
-			switch {
-			case bps > 1024*1024:
-				bps = bps / (1024 * 1024)
-				unit = "MB"
-			case bps > 1024:
-				bps = bps / 1024
-				unit = "KB"
-			default:
-			}
-
-			data := fmt.Sprintf("driver: read '%s' at %.2f %s/s (%d in %s)", name, bps, unit, fdtr.totalBytes, dur)
-
-			emit.Send(&rpc.OutputData{
-				Stream:     cfg.Stream,
-				StreamType: rpc.DRIVER,
-				Data:       []byte(data),
-			})
-
-			fmt.Println(data)
-
+				atomic.AddInt64(total, int64(fdtr.totalBytes))
+			}(name)
 		}
+
+		wg.Wait()
+
+		dur := time.Since(start)
+
+		bps := float64(*total) / dur.Seconds()
+
+		unit := "B"
+
+		switch {
+		case bps > 1024*1024:
+			bps = bps / (1024 * 1024)
+			unit = "MB"
+		case bps > 1024:
+			bps = bps / 1024
+			unit = "KB"
+		default:
+		}
+
+		data := fmt.Sprintf("driver: read volumes at %.2f %s/s (%d in %s)", bps, unit, *total, dur)
+
+		emit.Send(&rpc.OutputData{
+			Stream:     cfg.Stream,
+			StreamType: rpc.DRIVER,
+			Data:       []byte(data),
+		})
+
+		fmt.Println(data)
 	}
 
 	for _, path := range cfg.Outputs {
@@ -133,8 +145,6 @@ func realmain() {
 	}
 
 	cmd := exec.Command(cfg.Path, cfg.Args...)
-	// Inherit PATH through because different images setup PATH
-	// special and we want to honor it.
 	cmd.Env = append(cfg.Env, os.Environ()...)
 
 	stdin, err := cmd.StdinPipe()
@@ -384,8 +394,6 @@ func realmain() {
 	log.Printf("process done: %s", err)
 
 	if cfg.WaitForVolumes {
-		ctx, _ = context.WithTimeout(ctx, 10*time.Minute)
-
 		files, err := tc.ProvideFiles(ctx)
 		if err != nil {
 			log.Fatal(err)
@@ -506,12 +514,12 @@ func (f *filedataToReader) Read(b []byte) (int, error) {
 			copy(b, f.cont.Data[:len(b)])
 			f.cont.Data = f.cont.Data[len(b):]
 			return len(b), nil
-		} else {
-			data := f.cont
-			f.cont = nil
-			copy(b, data.Data)
-			return len(data.Data), nil
 		}
+
+		data := f.cont
+		f.cont = nil
+		copy(b, data.Data)
+		return len(data.Data), nil
 	}
 
 	data, err := f.files.Recv()
@@ -530,8 +538,8 @@ func (f *filedataToReader) Read(b []byte) (int, error) {
 		data.Data = data.Data[len(b):]
 		f.cont = data
 		return len(b), nil
-	} else {
-		copy(b, data.Data)
-		return len(data.Data), nil
 	}
+
+	copy(b, data.Data)
+	return len(data.Data), nil
 }

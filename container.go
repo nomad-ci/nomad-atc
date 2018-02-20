@@ -540,14 +540,18 @@ outer:
 				seenRunning = true
 			}
 
-		case "complete", "failed":
-			if alloc.ClientStatus == "failed" {
-				p.logger.Error("nomad-allocation-failed", errors.New("allocation failed"), lager.Data{"job": p.job})
-				p.setStatus(255)
-			} else {
-				p.logger.Info("nomad-allocation-finished", lager.Data{"job": p.job, "exit": p.status})
-			}
+		case "complete":
+			p.logger.Info("nomad-allocation-finished", lager.Data{"job": p.job, "exit": p.status})
 
+			// Purge completed check jobs because they create a huge amount of clutter in nomad otherwise
+			if p.Container.md.Type == db.ContainerTypeCheck {
+				p.logger.Debug("nomad-check-job-purged", lager.Data{"job:": p.job})
+				n.Jobs().Deregister(p.job, true, nil)
+			}
+			return
+		case "failed":
+			p.logger.Error("nomad-allocation-failed", errors.New("allocation failed"), lager.Data{"job": p.job})
+			p.setStatus(255)
 			return
 		}
 
