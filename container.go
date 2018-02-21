@@ -234,7 +234,7 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 			}
 
 		} else {
-			fmt.Errorf("unsupported resource: %s", c.spec.ImageSpec.ResourceType)
+			fmt.Printf("unsupported resource: %s", c.spec.ImageSpec.ResourceType)
 		}
 	} else {
 		src, err := ir.Source.Evaluate()

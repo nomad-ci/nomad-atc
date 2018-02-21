@@ -25,6 +25,8 @@ import (
 	"github.com/nomad-ci/nomad-atc/rpc"
 )
 
+// Driver provides the RPC interface that the drivers running in the builds
+// to communicate with.
 type Driver struct {
 	xid int64
 
@@ -42,6 +44,7 @@ type Driver struct {
 	containers *lru.ARCCache
 }
 
+// NewDriver creates a new Driver
 func NewDriver(logger lager.Logger, port int) (*Driver, error) {
 	c, err := lru.NewARC(1024)
 	if err != nil {
@@ -77,10 +80,12 @@ func NewDriver(logger lager.Logger, port int) (*Driver, error) {
 	return d, nil
 }
 
+// XID returns the next unique number
 func (d *Driver) XID() int64 {
 	return atomic.AddInt64(&d.xid, 1)
 }
 
+// Run the driver's components, such as the http server and GRPC server
 func (d *Driver) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
 	close(ready)
 
@@ -123,6 +128,7 @@ func (d *Driver) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
 	}
 }
 
+// Register tracks a new Process
 func (d *Driver) Register(p *Process) int64 {
 	d.mu.Lock()
 
@@ -135,6 +141,7 @@ func (d *Driver) Register(p *Process) int64 {
 	return sid
 }
 
+// Deregister removes tracking of a Process
 func (d *Driver) Deregister(s int64) {
 	d.mu.Lock()
 
@@ -150,6 +157,8 @@ func (d *Driver) Deregister(s int64) {
 	d.mu.Unlock()
 }
 
+// CancelForBuild finds all the running Processes for the given build and
+// closes them
 func (d *Driver) CancelForBuild(id int) {
 	d.logger.Info("nomad-driver-cancel-for-build", lager.Data{"build": id})
 	d.mu.Lock()
@@ -174,6 +183,7 @@ func (d *Driver) CancelForBuild(id int) {
 	}
 }
 
+// FindProcess returns the Process that matches the requested stream id
 func (d *Driver) FindProcess(stream int64) (*Process, bool) {
 	d.mu.Lock()
 	proc, ok := d.streams[int64(stream)]
@@ -182,6 +192,9 @@ func (d *Driver) FindProcess(stream int64) (*Process, bool) {
 	return proc, ok
 }
 
+// ProvideFiles is called via GRPC from a remote driver. This is used to
+// allow files to be requested from the remote driver to move volumes
+// between containers.
 func (d *Driver) ProvideFiles(s rpc.Task_ProvideFilesServer) error {
 	md, ok := metadata.FromIncomingContext(s.Context())
 	if !ok {
@@ -246,6 +259,9 @@ func (d *Driver) ProvideFiles(s rpc.Task_ProvideFilesServer) error {
 	return nil
 }
 
+// EmitOutput is called via GRPC by a remote driver. It allows the remote driver
+// to send data from streams such as Stdout and Stderr. That data is then fed to
+// the process represented by the remote driver.
 func (d *Driver) EmitOutput(s rpc.Task_EmitOutputServer) error {
 	md, ok := metadata.FromIncomingContext(s.Context())
 	if !ok {
@@ -394,6 +410,8 @@ func (d *Driver) EmitOutput(s rpc.Task_EmitOutputServer) error {
 
 const chunkSize = 4096
 
+// RequestVolume is called via GRPC by a remote driver. It streams the data
+// for the requested volume back.
 func (d *Driver) RequestVolume(req *rpc.VolumeRequest, stream rpc.Task_RequestVolumeServer) error {
 	md, ok := metadata.FromIncomingContext(stream.Context())
 	if !ok {
