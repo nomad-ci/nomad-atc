@@ -2,6 +2,8 @@ FROM golang:alpine3.7 AS builder
 
 RUN mkdir -p /go/src/github.com/nomad-ci
 
+RUN apk add --no-cache git make
+
 ADD . /go/src/github.com/nomad-ci/nomad-atc
 
 RUN go get github.com/hashicorp/go-bindata/...
