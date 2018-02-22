@@ -4,7 +4,8 @@ RUN mkdir -p /go/src/github.com/nomad-ci
 
 ADD . /go/src/github.com/nomad-ci/nomad-atc
 
-RUN go build -o /tmp/atc github.com/nomad-ci/nomad-atc/cmd/atc
+RUN go get github.com/hashicorp/go-bindata/...
+RUN cd /go/src/github.com/nomad-ci/nomad-atc && make build && cp bin/atc /tmp
 
 FROM alpine:3.7
 
