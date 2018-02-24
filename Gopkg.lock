@@ -245,6 +245,12 @@
   revision = "576b6af77ae4f3ccef356902fb3b9a9ae22e0b11"
 
 [[projects]]
+  name = "github.com/davecgh/go-spew"
+  packages = ["spew"]
+  revision = "346938d642f2ec3594ed81d874461961cd0faa76"
+  version = "v1.1.0"
+
+[[projects]]
   name = "github.com/dghubble/oauth1"
   packages = ["."]
   revision = "70562a5920ad9b6ff03ef697c0f90ae569abbd2b"
@@ -993,6 +999,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "def4e39596fcf599c54ffccf319a32279628d287a56baee5c8c22693104fdb53"
+  inputs-digest = "a0edc01a97ca3ea407a08dbed4772331cf77c8010dec050f170f0dd0256646c2"
   solver-name = "gps-cdcl"
   solver-version = 1
