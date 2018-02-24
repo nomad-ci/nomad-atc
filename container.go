@@ -16,6 +16,7 @@ import (
 	"code.cloudfoundry.org/lager"
 	"github.com/concourse/atc/db"
 	"github.com/concourse/atc/worker"
+	"github.com/davecgh/go-spew/spew"
 	nomad "github.com/hashicorp/nomad/api"
 	"github.com/nomad-ci/nomad-atc/config"
 	"github.com/nomad-ci/nomad-atc/rpc"
@@ -251,6 +252,19 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 		if tag, ok := src["tag"]; ok {
 			dockerImage = fmt.Sprintf("%s:%s", dockerImage, tag)
 		}
+	}
+
+	if dockerImage == "" {
+		spew.Dump(c.spec.ImageSpec)
+		var typ string
+
+		if ir == nil {
+			typ = "<unknown>"
+		} else {
+			typ = ir.Type
+		}
+
+		return nil, fmt.Errorf("Unable to derive docker image to use from spec: %s", typ)
 	}
 
 	config, err := json.Marshal(&tc)
