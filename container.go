@@ -42,6 +42,7 @@ type Container struct {
 	props   garden.Properties
 	md      db.ContainerMetadata
 
+	image   *worker.ImageResource
 	process *Process
 }
 
@@ -220,7 +221,7 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 		priv        = c.spec.ImageSpec.Privileged
 	)
 
-	ir := c.spec.ImageSpec.ImageResource
+	ir := c.image
 	if ir == nil || ir.Type != "docker-image" {
 		if br, ok := AllResources[c.spec.ImageSpec.ResourceType]; ok {
 			dockerImage = br.Image

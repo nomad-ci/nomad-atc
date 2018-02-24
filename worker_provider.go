@@ -178,6 +178,19 @@ func (w *Worker) FindOrCreateContainer(logger lager.Logger, signals <-chan os.Si
 		handle:  fmt.Sprintf("%x", w.Provider.Driver.XID()),
 	}
 
+	rt, found := vrt.Lookup(spec.ImageSpec.ResourceType)
+	if found {
+		ires := &worker.ImageResource{}
+		ires.Type = rt.Type
+		ires.Params = &rt.Params
+		ires.Source = rt.Source
+		ires.Version = &rt.Version
+
+		cont.image = ires
+	} else {
+		cont.image = spec.ImageSpec.ImageResource
+	}
+
 	for _, input := range spec.Inputs {
 		volume := &Volume{
 			Logger:    logger,
