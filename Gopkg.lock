@@ -61,6 +61,41 @@
   revision = "c22b6e4a7ac19d77c6f30cbea4b8f64b1fd96e86"
 
 [[projects]]
+  name = "github.com/aws/aws-sdk-go"
+  packages = [
+    "aws",
+    "aws/awserr",
+    "aws/awsutil",
+    "aws/client",
+    "aws/client/metadata",
+    "aws/corehandlers",
+    "aws/credentials",
+    "aws/credentials/ec2rolecreds",
+    "aws/credentials/endpointcreds",
+    "aws/credentials/stscreds",
+    "aws/defaults",
+    "aws/ec2metadata",
+    "aws/endpoints",
+    "aws/request",
+    "aws/session",
+    "aws/signer/v4",
+    "internal/sdkrand",
+    "internal/shareddefaults",
+    "private/protocol",
+    "private/protocol/json/jsonutil",
+    "private/protocol/jsonrpc",
+    "private/protocol/query",
+    "private/protocol/query/queryutil",
+    "private/protocol/rest",
+    "private/protocol/xml/xmlutil",
+    "service/ssm",
+    "service/ssm/ssmiface",
+    "service/sts"
+  ]
+  revision = "ce48e67ca697079662aee65a13202f37a185962b"
+  version = "v1.13.6"
+
+[[projects]]
   branch = "master"
   name = "github.com/beorn7/perks"
   packages = ["quantile"]
@@ -123,18 +158,18 @@
   revision = "d052b28175edc3636cbf528dcdd5ad47ae587f6c"
 
 [[projects]]
-  branch = "tweaks"
   name = "github.com/concourse/atc"
   packages = [
     ".",
     "api",
-    "api/authserver",
+    "api/auth",
     "api/buildserver",
     "api/cliserver",
     "api/configserver",
     "api/containerserver",
     "api/infoserver",
     "api/jobserver",
+    "api/legacyserver",
     "api/loglevelserver",
     "api/pipelineserver",
     "api/pipes",
@@ -145,27 +180,19 @@
     "api/volumeserver",
     "api/workerserver",
     "atccmd",
-    "auth",
-    "auth/bitbucket",
-    "auth/bitbucket/cloud",
-    "auth/bitbucket/server",
-    "auth/genericoauth",
-    "auth/github",
-    "auth/gitlab",
-    "auth/provider",
-    "auth/routes",
-    "auth/uaa",
-    "auth/verifier",
     "builds",
     "creds",
     "creds/credhub",
     "creds/kubernetes",
     "creds/noop",
+    "creds/ssm",
     "creds/vault",
     "db",
     "db/algorithm",
+    "db/encryption",
     "db/lock",
     "db/migration",
+    "db/migration/migrations",
     "engine",
     "event",
     "exec",
@@ -182,17 +209,12 @@
     "scheduler/inputmapper",
     "scheduler/inputmapper/inputconfig",
     "scheduler/maxinflight",
-    "web",
-    "web/manifest",
-    "web/publichandler",
-    "web/robotstxt",
     "worker",
     "worker/image",
     "worker/transport",
     "wrappa"
   ]
-  revision = "514b2d900915d804eb9ca4fcee6910e1700096d9"
-  source = "github.com/evanphx/atc"
+  revision = "b741075e962bcaea0e7f6eaa82771042c08dc8b1"
 
 [[projects]]
   name = "github.com/concourse/baggageclaim"
@@ -203,7 +225,7 @@
     "uidgid",
     "volume"
   ]
-  revision = "c235a04"
+  revision = "a48b950f5b1afd68a8d6968fe3082f014d817e95"
 
 [[projects]]
   branch = "master"
@@ -222,9 +244,43 @@
 
 [[projects]]
   branch = "master"
+  name = "github.com/concourse/skymarshal"
+  packages = [
+    ".",
+    "auth",
+    "authserver",
+    "basicauth",
+    "bitbucket",
+    "bitbucket/cloud",
+    "bitbucket/server",
+    "genericoauth",
+    "github",
+    "gitlab",
+    "noauth",
+    "provider",
+    "uaa",
+    "verifier"
+  ]
+  revision = "add4b8d86b82dcfccf30805cf3b7424514c1b079"
+
+[[projects]]
+  branch = "master"
   name = "github.com/concourse/tsa"
   packages = ["tsaflags"]
   revision = "3341c7ae6d42b406475c6975a9581009a5b45995"
+
+[[projects]]
+  branch = "master"
+  name = "github.com/concourse/web"
+  packages = [
+    ".",
+    "bindata",
+    "indexhandler",
+    "manifesthandler",
+    "publichandler",
+    "robotshandler"
+  ]
+  revision = "b16ce7c1f4bf659cbabf97fb77f41b8e63ddf1e6"
 
 [[projects]]
   branch = "master"
@@ -291,6 +347,12 @@
   packages = ["."]
   revision = "0ca9ea5df5451ffdf184b4428c902747c2c11cd7"
   version = "v1.0.0"
+
+[[projects]]
+  name = "github.com/go-ini/ini"
+  packages = ["."]
+  revision = "32e4c1e6bc4e7d0d8451aa6b75200d19e37a536a"
+  version = "v1.32.0"
 
 [[projects]]
   name = "github.com/gogo/protobuf"
@@ -490,6 +552,11 @@
   packages = ["."]
   revision = "96dc06278ce32a0e9d957d590bb987c81ee66407"
   version = "v1.3.0"
+
+[[projects]]
+  name = "github.com/jmespath/go-jmespath"
+  packages = ["."]
+  revision = "0b12d6b5"
 
 [[projects]]
   name = "github.com/json-iterator/go"
@@ -999,6 +1066,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "a0edc01a97ca3ea407a08dbed4772331cf77c8010dec050f170f0dd0256646c2"
+  inputs-digest = "d3f0d5731a683b9170ce153dccc5de9be8d4fceab18a3e2b98c598b65f6c2252"
   solver-name = "gps-cdcl"
   solver-version = 1

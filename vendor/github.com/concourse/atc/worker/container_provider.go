@@ -26,27 +26,23 @@ func NewContainerProvider(
 	//TODO: less of all this junk..
 	imageFactory ImageFactory,
 	dbVolumeFactory db.VolumeFactory,
-	dbResourceCacheFactory db.ResourceCacheFactory,
-	dbResourceConfigFactory db.ResourceConfigFactory,
 	dbTeamFactory db.TeamFactory,
 	lockFactory lock.LockFactory,
 ) ContainerProvider {
 
 	return &containerProvider{
-		gardenClient:            gardenClient,
-		baggageclaimClient:      baggageclaimClient,
-		volumeClient:            volumeClient,
-		imageFactory:            imageFactory,
-		dbVolumeFactory:         dbVolumeFactory,
-		dbResourceCacheFactory:  dbResourceCacheFactory,
-		dbResourceConfigFactory: dbResourceConfigFactory,
-		dbTeamFactory:           dbTeamFactory,
-		lockFactory:             lockFactory,
-		httpProxyURL:            dbWorker.HTTPProxyURL(),
-		httpsProxyURL:           dbWorker.HTTPSProxyURL(),
-		noProxy:                 dbWorker.NoProxy(),
-		clock:                   clock,
-		worker:                  dbWorker,
+		gardenClient:       gardenClient,
+		baggageclaimClient: baggageclaimClient,
+		volumeClient:       volumeClient,
+		imageFactory:       imageFactory,
+		dbVolumeFactory:    dbVolumeFactory,
+		dbTeamFactory:      dbTeamFactory,
+		lockFactory:        lockFactory,
+		httpProxyURL:       dbWorker.HTTPProxyURL(),
+		httpsProxyURL:      dbWorker.HTTPSProxyURL(),
+		noProxy:            dbWorker.NoProxy(),
+		clock:              clock,
+		worker:             dbWorker,
 	}
 }
 
@@ -71,14 +67,12 @@ type ContainerProvider interface {
 }
 
 type containerProvider struct {
-	gardenClient            garden.Client
-	baggageclaimClient      baggageclaim.Client
-	volumeClient            VolumeClient
-	imageFactory            ImageFactory
-	dbVolumeFactory         db.VolumeFactory
-	dbResourceCacheFactory  db.ResourceCacheFactory
-	dbResourceConfigFactory db.ResourceConfigFactory
-	dbTeamFactory           db.TeamFactory
+	gardenClient       garden.Client
+	baggageclaimClient baggageclaim.Client
+	volumeClient       VolumeClient
+	imageFactory       ImageFactory
+	dbVolumeFactory    db.VolumeFactory
+	dbTeamFactory      db.TeamFactory
 
 	lockFactory lock.LockFactory
 
@@ -204,7 +198,7 @@ func (p *containerProvider) FindOrCreateContainer(
 
 			fetchedImage, err := image.FetchForContainer(logger, cancel, creatingContainer)
 			if err != nil {
-				///TODO : Creating Container - mark as errored in db
+				creatingContainer.Failed()
 				logger.Error("failed-to-fetch-image-for-container", err)
 				return nil, err
 			}
@@ -371,17 +365,17 @@ func (p *containerProvider) createGardenContainer(
 		})
 	}
 
+	worker := NewGardenWorker(
+		p.gardenClient,
+		p.baggageclaimClient,
+		p,
+		p.volumeClient,
+		p.worker,
+		p.clock,
+	)
+
 	for _, inputSource := range spec.Inputs {
 		var inputVolume Volume
-
-		worker := NewGardenWorker(
-			p.gardenClient,
-			p.baggageclaimClient,
-			p,
-			p.volumeClient,
-			p.worker,
-			p.clock,
-		)
 
 		localVolume, found, err := inputSource.Source().VolumeOn(worker)
 		if err != nil {
@@ -452,6 +446,16 @@ func (p *containerProvider) createGardenContainer(
 	}
 
 	bindMounts := []garden.BindMount{}
+
+	for _, mount := range spec.BindMounts {
+		bindMount, found, mountErr := mount.VolumeOn(worker)
+		if mountErr != nil {
+			return nil, mountErr
+		}
+		if found {
+			bindMounts = append(bindMounts, bindMount)
+		}
+	}
 
 	volumeHandleMounts := map[string]string{}
 	for _, mount := range volumeMounts {

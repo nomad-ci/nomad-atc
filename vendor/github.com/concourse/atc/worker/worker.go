@@ -33,7 +33,7 @@ func (err MalformedMetadataError) Error() string {
 	return fmt.Sprintf("malformed image metadata: %s", err.UnmarshalError)
 }
 
-const certsVolumeName = "resource-certs"
+const certsVolumeName = "certificates"
 
 const ephemeralPropertyName = "concourse:ephemeral"
 const volumePropertyName = "concourse:volumes"
@@ -60,9 +60,10 @@ type Worker interface {
 	FindVolumeForResourceCache(logger lager.Logger, resourceCache *db.UsedResourceCache) (Volume, bool, error)
 	FindVolumeForTaskCache(lager.Logger, int, int, string, string) (Volume, bool, error)
 
+	CertsVolume(lager.Logger) (volume Volume, found bool, err error)
+
 	GardenClient() garden.Client
 	BaggageclaimClient() baggageclaim.Client
-	EnsureCertsVolumeExists(logger lager.Logger) error
 }
 
 type gardenWorker struct {
@@ -154,27 +155,6 @@ func (worker *gardenWorker) IsVersionCompatible(logger lager.Logger, comparedVer
 	}
 }
 
-func (worker *gardenWorker) EnsureCertsVolumeExists(logger lager.Logger) error {
-	baggageclaimClient := worker.BaggageclaimClient()
-
-	_, found, err := baggageclaimClient.LookupVolume(logger, certsVolumeName)
-	if err != nil {
-		return err
-	}
-
-	if found {
-		return nil
-	}
-
-	_, err = baggageclaimClient.CreateVolume(logger, certsVolumeName, baggageclaim.VolumeSpec{
-		Strategy: baggageclaim.ImportStrategy{
-			Path: "/etc/ssl/certs",
-		},
-	})
-
-	return err
-}
-
 func (worker *gardenWorker) FindResourceTypeByPath(path string) (atc.WorkerResourceType, bool) {
 	for _, rt := range worker.resourceTypes {
 		if path == rt.Image {
@@ -191,6 +171,10 @@ func (worker *gardenWorker) FindVolumeForResourceCache(logger lager.Logger, reso
 
 func (worker *gardenWorker) FindVolumeForTaskCache(logger lager.Logger, teamID int, jobID int, stepName string, path string) (Volume, bool, error) {
 	return worker.volumeClient.FindVolumeForTaskCache(logger, teamID, jobID, stepName, path)
+}
+
+func (worker *gardenWorker) CertsVolume(logger lager.Logger) (Volume, bool, error) {
+	return worker.volumeClient.FindOrCreateVolumeForResourceCerts(logger.Session("find-or-create"))
 }
 
 func (worker *gardenWorker) LookupVolume(logger lager.Logger, handle string) (Volume, bool, error) {

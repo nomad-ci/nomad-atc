@@ -228,6 +228,34 @@ func validateJobs(c Config) ([]Warning, error) {
 		warnings = append(warnings, planWarnings...)
 		errorMessages = append(errorMessages, planErrMessages...)
 
+		if job.Abort != nil {
+			subIdentifier := fmt.Sprintf("%s.abort", identifier)
+			planWarnings, planErrMessages := validatePlan(c, subIdentifier, *job.Abort)
+			warnings = append(warnings, planWarnings...)
+			errorMessages = append(errorMessages, planErrMessages...)
+		}
+
+		if job.Failure != nil {
+			subIdentifier := fmt.Sprintf("%s.failure", identifier)
+			planWarnings, planErrMessages := validatePlan(c, subIdentifier, *job.Failure)
+			warnings = append(warnings, planWarnings...)
+			errorMessages = append(errorMessages, planErrMessages...)
+		}
+
+		if job.Ensure != nil {
+			subIdentifier := fmt.Sprintf("%s.ensure", identifier)
+			planWarnings, planErrMessages := validatePlan(c, subIdentifier, *job.Ensure)
+			warnings = append(warnings, planWarnings...)
+			errorMessages = append(errorMessages, planErrMessages...)
+		}
+
+		if job.Success != nil {
+			subIdentifier := fmt.Sprintf("%s.success", identifier)
+			planWarnings, planErrMessages := validatePlan(c, subIdentifier, *job.Success)
+			warnings = append(warnings, planWarnings...)
+			errorMessages = append(errorMessages, planErrMessages...)
+		}
+
 		encountered := map[string]int{}
 		for _, input := range job.Inputs() {
 			encountered[input.Name]++
@@ -438,7 +466,7 @@ func validatePlan(c Config, identifier string, plan PlanConfig) ([]Warning, []st
 	case plan.Task != "":
 		identifier = fmt.Sprintf("%s.task.%s", identifier, plan.Task)
 
-		if plan.TaskConfig == nil && plan.TaskConfigPath == "" && plan.ImageArtifactName == "" {
+		if plan.TaskConfig == nil && plan.TaskConfigPath == "" {
 			errorMessages = append(errorMessages, identifier+" does not specify any task configuration")
 		}
 

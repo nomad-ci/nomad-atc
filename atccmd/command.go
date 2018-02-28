@@ -19,13 +19,14 @@ import (
 	"code.cloudfoundry.org/lager"
 	"github.com/concourse/atc"
 	"github.com/concourse/atc/api"
+	"github.com/concourse/atc/api/auth"
 	"github.com/concourse/atc/api/buildserver"
 	"github.com/concourse/atc/api/containerserver"
-	"github.com/concourse/atc/auth"
 	"github.com/concourse/atc/builds"
 	"github.com/concourse/atc/creds"
 	"github.com/concourse/atc/creds/noop"
 	"github.com/concourse/atc/db"
+	"github.com/concourse/atc/db/encryption"
 	"github.com/concourse/atc/db/lock"
 	"github.com/concourse/atc/db/migration"
 	"github.com/concourse/atc/engine"
@@ -37,12 +38,10 @@ import (
 	"github.com/concourse/atc/radar"
 	"github.com/concourse/atc/resource"
 	"github.com/concourse/atc/scheduler"
-	"github.com/concourse/atc/web"
-	"github.com/concourse/atc/web/manifest"
-	"github.com/concourse/atc/web/publichandler"
-	"github.com/concourse/atc/web/robotstxt"
 	"github.com/concourse/atc/worker"
 	"github.com/concourse/atc/wrappa"
+	"github.com/concourse/skymarshal"
+	"github.com/concourse/web"
 	jwt "github.com/dgrijalva/jwt-go"
 	multierror "github.com/hashicorp/go-multierror"
 	flags "github.com/jessevdk/go-flags"
@@ -53,16 +52,17 @@ import (
 	"github.com/tedsuo/ifrit/sigmon"
 	"github.com/xoebus/zest"
 
-	"github.com/concourse/atc/auth/provider"
-	"github.com/concourse/atc/auth/routes"
+	"github.com/concourse/skymarshal/provider"
 
 	// dynamically registered auth providers
-	_ "github.com/concourse/atc/auth/bitbucket/cloud"
-	_ "github.com/concourse/atc/auth/bitbucket/server"
-	_ "github.com/concourse/atc/auth/genericoauth"
-	_ "github.com/concourse/atc/auth/github"
-	_ "github.com/concourse/atc/auth/gitlab"
-	_ "github.com/concourse/atc/auth/uaa"
+	_ "github.com/concourse/skymarshal/basicauth"
+	_ "github.com/concourse/skymarshal/bitbucket/cloud"
+	_ "github.com/concourse/skymarshal/bitbucket/server"
+	_ "github.com/concourse/skymarshal/genericoauth"
+	_ "github.com/concourse/skymarshal/github"
+	_ "github.com/concourse/skymarshal/gitlab"
+	_ "github.com/concourse/skymarshal/noauth"
+	_ "github.com/concourse/skymarshal/uaa"
 
 	// dynamically registered metric emitters
 	_ "github.com/concourse/atc/metric/emitter"
@@ -70,6 +70,7 @@ import (
 	// dynamically registered credential managers
 	_ "github.com/concourse/atc/creds/credhub"
 	_ "github.com/concourse/atc/creds/kubernetes"
+	_ "github.com/concourse/atc/creds/ssm"
 	_ "github.com/concourse/atc/creds/vault"
 )
 
@@ -194,6 +195,7 @@ func (cmd *ATCCommand) currentDBVersion() error {
 		defaultDriverName,
 		cmd.Postgres.ConnectionString(),
 		nil,
+		encryption.NewNoEncryption(),
 	)
 
 	version, err := helper.CurrentVersion()
@@ -210,6 +212,7 @@ func (cmd *ATCCommand) supportedDBVersion() error {
 		defaultDriverName,
 		cmd.Postgres.ConnectionString(),
 		nil,
+		encryption.NewNoEncryption(),
 	)
 
 	version, err := helper.SupportedVersion()
@@ -224,6 +227,18 @@ func (cmd *ATCCommand) supportedDBVersion() error {
 func (cmd *ATCCommand) migrateDBToVersion() error {
 	version := cmd.Migration.MigrateDBToVersion
 
+	var newKey *encryption.Key
+	if cmd.EncryptionKey.AEAD != nil {
+		newKey = encryption.NewKey(cmd.EncryptionKey.AEAD)
+	}
+
+	var strategy encryption.Strategy
+	if newKey != nil {
+		strategy = newKey
+	} else {
+		strategy = encryption.NewNoEncryption()
+	}
+
 	lockConn, err := cmd.constructLockConn(defaultDriverName)
 	if err != nil {
 		return err
@@ -234,6 +249,7 @@ func (cmd *ATCCommand) migrateDBToVersion() error {
 		defaultDriverName,
 		cmd.Postgres.ConnectionString(),
 		lock.NewLockFactory(lockConn),
+		strategy,
 	)
 
 	err = helper.MigrateToVersion(version)
@@ -352,14 +368,14 @@ func (cmd *ATCCommand) constructMembers(
 		break
 	}
 
-	var newKey *db.EncryptionKey
+	var newKey *encryption.Key
 	if cmd.EncryptionKey.AEAD != nil {
-		newKey = db.NewEncryptionKey(cmd.EncryptionKey.AEAD)
+		newKey = encryption.NewKey(cmd.EncryptionKey.AEAD)
 	}
 
-	var oldKey *db.EncryptionKey
+	var oldKey *encryption.Key
 	if cmd.OldEncryptionKey.AEAD != nil {
-		oldKey = db.NewEncryptionKey(cmd.OldEncryptionKey.AEAD)
+		oldKey = encryption.NewKey(cmd.OldEncryptionKey.AEAD)
 	}
 
 	lockConn, err := cmd.constructLockConn(retryingDriverName)
@@ -377,7 +393,6 @@ func (cmd *ATCCommand) constructMembers(
 	bus := dbConn.Bus()
 
 	teamFactory := db.NewTeamFactory(dbConn, lockFactory)
-	resourceFactoryFactory := resource.NewResourceFactoryFactory()
 	dbBuildFactory := db.NewBuildFactory(dbConn, lockFactory)
 	dbVolumeFactory := db.NewVolumeFactory(dbConn)
 	dbContainerRepository := db.NewContainerRepository(dbConn)
@@ -461,7 +476,7 @@ func (cmd *ATCCommand) constructMembers(
 	)
 
 	resourceFetcher := resourceFetcherFactory.FetcherFor(workerClient)
-	resourceFactory := resourceFactoryFactory.FactoryFor(workerClient)
+	resourceFactory := resource.NewResourceFactory(workerClient)
 	engine := cmd.constructEngine(nomadDriver, workerClient, resourceFetcher, resourceFactory, dbResourceCacheFactory, variablesFactory)
 
 	radarSchedulerFactory := pipelines.NewRadarSchedulerFactory(
@@ -494,26 +509,6 @@ func (cmd *ATCCommand) constructMembers(
 		return nil, err
 	}
 
-	providerFactoryV2 := auth.NewOAuthFactory(
-		logger.Session("oauth-provider-factory"),
-		cmd.oauthBaseURL(),
-		routes.OAuthRoutes,
-		routes.OAuthCallback,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	providerFactoryV1 := auth.NewOAuthFactory(
-		logger.Session("oauth-v1-provider-factory"),
-		cmd.oauthBaseURL(),
-		routes.OAuthV1Routes,
-		routes.OAuthV1Callback,
-	)
-	if err != nil {
-		return nil, err
-	}
-
 	drain := make(chan struct{})
 
 	apiHandler, err := cmd.constructAPIHandler(
@@ -525,7 +520,6 @@ func (cmd *ATCCommand) constructMembers(
 		dbVolumeFactory,
 		dbContainerRepository,
 		dbBuildFactory,
-		providerFactoryV2,
 		signingKey,
 		engine,
 		workerClient,
@@ -539,27 +533,16 @@ func (cmd *ATCCommand) constructMembers(
 	if err != nil {
 		return nil, err
 	}
-	oauthV2Handler, err := auth.NewOAuthHandler(
-		logger,
-		providerFactoryV2,
-		teamFactory,
+
+	authHandler, err := skymarshal.NewHandler(&skymarshal.Config{
+		cmd.ExternalURL.String(),
+		cmd.oauthBaseURL(),
 		signingKey,
 		cmd.AuthDuration,
 		cmd.isTLSEnabled(),
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	oauthV1Handler, err := auth.NewOAuthV1Handler(
-		logger,
-		providerFactoryV1,
 		teamFactory,
-		signingKey,
-		cmd.AuthDuration,
-		cmd.isTLSEnabled(),
-	)
-
+		logger,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -571,11 +554,6 @@ func (cmd *ATCCommand) constructMembers(
 
 	webHandler = metric.WrapHandler(logger, "web", webHandler)
 
-	publicHandler, err := publichandler.NewHandler()
-	if err != nil {
-		return nil, err
-	}
-
 	var httpHandler, httpsHandler http.Handler
 	if cmd.isTLSEnabled() {
 		httpHandler = cmd.constructHTTPHandler(
@@ -584,11 +562,6 @@ func (cmd *ATCCommand) constructMembers(
 			tlsRedirectHandler{
 				externalHost: cmd.ExternalURL.URL().Host,
 				baseHandler:  webHandler,
-			},
-
-			tlsRedirectHandler{
-				externalHost: cmd.ExternalURL.URL().Host,
-				baseHandler:  publicHandler,
 			},
 
 			// note: intentionally not wrapping API; redirecting is more trouble than
@@ -602,30 +575,22 @@ func (cmd *ATCCommand) constructMembers(
 
 			tlsRedirectHandler{
 				externalHost: cmd.ExternalURL.URL().Host,
-				baseHandler:  oauthV2Handler,
-			},
-			tlsRedirectHandler{
-				externalHost: cmd.ExternalURL.URL().Host,
-				baseHandler:  oauthV1Handler,
+				baseHandler:  authHandler,
 			},
 		)
 
 		httpsHandler = cmd.constructHTTPHandler(
 			logger,
 			webHandler,
-			publicHandler,
 			apiHandler,
-			oauthV2Handler,
-			oauthV1Handler,
+			authHandler,
 		)
 	} else {
 		httpHandler = cmd.constructHTTPHandler(
 			logger,
 			webHandler,
-			publicHandler,
 			apiHandler,
-			oauthV2Handler,
-			oauthV1Handler,
+			authHandler,
 		)
 	}
 
@@ -908,9 +873,9 @@ func (cmd *ATCCommand) validate() error {
 	var errs *multierror.Error
 	isConfigured := false
 
-	for _, p := range cmd.ProviderAuth {
-		if p.IsConfigured() {
-			err := p.Validate()
+	for _, config := range cmd.ProviderAuth {
+		if config.IsConfigured() {
+			err := config.Validate()
 
 			if err != nil {
 				errs = multierror.Append(errs, err)
@@ -920,15 +885,7 @@ func (cmd *ATCCommand) validate() error {
 		}
 	}
 
-	if cmd.Authentication.BasicAuth.IsConfigured() {
-		err := cmd.Authentication.BasicAuth.Validate()
-		if err != nil {
-			errs = multierror.Append(errs, err)
-		}
-		isConfigured = true
-	}
-
-	if !isConfigured && !cmd.Authentication.NoAuth {
+	if !isConfigured {
 		errs = multierror.Append(
 			errs,
 			errors.New("must configure basic auth, OAuth, UAAAuth, or provide no-auth flag"),
@@ -998,8 +955,8 @@ func (cmd *ATCCommand) configureMetrics(logger lager.Logger) error {
 func (cmd *ATCCommand) constructDBConn(
 	driverName string,
 	logger lager.Logger,
-	newKey *db.EncryptionKey,
-	oldKey *db.EncryptionKey,
+	newKey *encryption.Key,
+	oldKey *encryption.Key,
 	maxConn int,
 	connectionName string,
 	lockFactory lock.LockFactory,
@@ -1090,29 +1047,44 @@ func (cmd *ATCCommand) configureAuthForDefaultTeam(teamFactory db.TeamFactory) e
 		return errors.New("default team not found")
 	}
 
-	var basicAuth *atc.BasicAuth
-	if cmd.Authentication.BasicAuth.IsConfigured() {
-		basicAuth = &atc.BasicAuth{
-			BasicAuthUsername: cmd.Authentication.BasicAuth.Username,
-			BasicAuthPassword: cmd.Authentication.BasicAuth.Password,
-		}
-	}
+	// var basicAuth *atc.BasicAuth
+	// if cmd.Authentication.BasicAuth.IsConfigured() {
+	// 	basicAuth = &atc.BasicAuth{
+	// 		BasicAuthUsername: cmd.Authentication.BasicAuth.Username,
+	// 		BasicAuthPassword: cmd.Authentication.BasicAuth.Password,
+	// 	}
+	// }
 
-	err = team.UpdateBasicAuth(basicAuth)
-	if err != nil {
-		return err
-	}
+	// err = team.UpdateBasicAuth(basicAuth)
+	// if err != nil {
+	// 	return err
+	// }
 
+	providers := provider.GetProviders()
 	teamAuth := make(map[string]*json.RawMessage)
-	for name, config := range cmd.ProviderAuth {
-		if config.IsConfigured() {
-			data, err := json.Marshal(config)
-			if err != nil {
-				return err
-			}
 
-			teamAuth[name] = (*json.RawMessage)(&data)
+	for name, config := range cmd.ProviderAuth {
+
+		if config.IsConfigured() {
+			if err := config.Finalize(); err == nil {
+
+				p, found := providers[name]
+				if !found {
+					return errors.New("provider not found: " + name)
+				}
+
+				data, err := p.MarshalConfig(config)
+				if err != nil {
+					return err
+				}
+
+				teamAuth[name] = data
+			}
 		}
+	}
+
+	if len(teamAuth) > 1 {
+		delete(teamAuth, "noauth")
 	}
 
 	err = team.UpdateProviderAuth(teamAuth)
@@ -1156,19 +1128,13 @@ func (cmd *ATCCommand) constructEngine(
 func (cmd *ATCCommand) constructHTTPHandler(
 	logger lager.Logger,
 	webHandler http.Handler,
-	publicHandler http.Handler,
 	apiHandler http.Handler,
-	oauthV2Handler http.Handler,
-	oauthV1Handler http.Handler,
-
+	authHandler http.Handler,
 ) http.Handler {
 	webMux := http.NewServeMux()
 	webMux.Handle("/api/v1/", apiHandler)
-	webMux.Handle("/auth/", oauthV2Handler)
-	webMux.Handle("/oauth/v1/", oauthV1Handler)
-	webMux.Handle("/public/", publicHandler)
-	webMux.Handle("/manifest.json", manifest.NewHandler())
-	webMux.Handle("/robots.txt", robotstxt.Handler{})
+	webMux.Handle("/oauth/", authHandler)
+	webMux.Handle("/auth/", authHandler)
 	webMux.Handle("/", webHandler)
 
 	httpHandler := wrappa.LoggerHandler{
@@ -1197,7 +1163,6 @@ func (cmd *ATCCommand) constructAPIHandler(
 	dbVolumeFactory db.VolumeFactory,
 	dbContainerRepository db.ContainerRepository,
 	dbBuildFactory db.BuildFactory,
-	providerFactory auth.OAuthFactory,
 	signingKey *rsa.PrivateKey,
 	engine engine.Engine,
 	workerClient worker.Client,
@@ -1207,27 +1172,16 @@ func (cmd *ATCCommand) constructAPIHandler(
 	radarScannerFactory radar.ScannerFactory,
 	variablesFactory creds.VariablesFactory,
 ) (http.Handler, error) {
-	authValidator := auth.JWTValidator{
-		PublicKey: &signingKey.PublicKey,
-	}
 
-	getTokenValidator := auth.NewGetTokenValidator(teamFactory)
-
-	checkPipelineAccessHandlerFactory := auth.NewCheckPipelineAccessHandlerFactory(
-		teamFactory,
-	)
-
+	checkPipelineAccessHandlerFactory := auth.NewCheckPipelineAccessHandlerFactory(teamFactory)
 	checkBuildReadAccessHandlerFactory := auth.NewCheckBuildReadAccessHandlerFactory(dbBuildFactory)
-
 	checkBuildWriteAccessHandlerFactory := auth.NewCheckBuildWriteAccessHandlerFactory(dbBuildFactory)
-
 	checkWorkerTeamAccessHandlerFactory := auth.NewCheckWorkerTeamAccessHandlerFactory(dbWorkerFactory)
 
 	apiWrapper := wrappa.MultiWrappa{
 		wrappa.NewAPIMetricsWrappa(logger),
 		wrappa.NewAPIAuthWrappa(
-			authValidator,
-			getTokenValidator,
+			auth.JWTValidator{PublicKey: &signingKey.PublicKey},
 			auth.JWTReader{PublicKey: &signingKey.PublicKey},
 			checkPipelineAccessHandlerFactory,
 			checkBuildReadAccessHandlerFactory,
@@ -1242,9 +1196,6 @@ func (cmd *ATCCommand) constructAPIHandler(
 		cmd.ExternalURL.String(),
 		apiWrapper,
 
-		auth.NewAuthTokenGenerator(signingKey),
-		auth.NewCSRFTokenGenerator(),
-		providerFactory,
 		cmd.oauthBaseURL(),
 
 		teamFactory,

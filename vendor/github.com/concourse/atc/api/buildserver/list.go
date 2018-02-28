@@ -7,8 +7,8 @@ import (
 	"strconv"
 
 	"github.com/concourse/atc"
+	"github.com/concourse/atc/api/auth"
 	"github.com/concourse/atc/api/present"
-	"github.com/concourse/atc/auth"
 	"github.com/concourse/atc/db"
 )
 
@@ -74,6 +74,7 @@ func (s *Server) ListBuilds(w http.ResponseWriter, r *http.Request) {
 		s.addPreviousLink(w, *pagination.Previous)
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
 	atc := make([]atc.Build, len(builds))

@@ -39,12 +39,11 @@
 
 [[constraint]]
   name = "github.com/concourse/atc"
-  source = "github.com/evanphx/atc"
-  branch = "tweaks"
+  revision = "b741075e962bcaea0e7f6eaa82771042c08dc8b1"
 
 [[constraint]]
   name = "github.com/concourse/baggageclaim"
-  revision = "c235a04"
+  revision = "a48b950f5b1afd68a8d6968fe3082f014d817e95"
 
 [[constraint]]
   branch = "master"

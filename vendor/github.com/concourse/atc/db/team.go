@@ -10,8 +10,6 @@ import (
 
 	"code.cloudfoundry.org/lager"
 
-	"golang.org/x/crypto/bcrypt"
-
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/atc"
 	"github.com/concourse/atc/creds"
@@ -29,10 +27,11 @@ type Team interface {
 	Name() string
 	Admin() bool
 
-	BasicAuth() *atc.BasicAuth
+	// BasicAuth() *atc.BasicAuth
 	Auth() map[string]*json.RawMessage
 
 	Delete() error
+	Rename(string) error
 
 	SavePipeline(
 		pipelineName string,
@@ -65,7 +64,7 @@ type Team interface {
 	FindContainerOnWorker(workerName string, owner ContainerOwner) (CreatingContainer, CreatedContainer, error)
 	CreateContainer(workerName string, owner ContainerOwner, meta ContainerMetadata) (CreatingContainer, error)
 
-	UpdateBasicAuth(basicAuth *atc.BasicAuth) error
+	// UpdateBasicAuth(basicAuth *atc.BasicAuth) error
 	UpdateProviderAuth(auth map[string]*json.RawMessage) error
 
 	CreatePipe(string, string) error
@@ -80,15 +79,16 @@ type team struct {
 	name  string
 	admin bool
 
-	basicAuth *atc.BasicAuth
+	// basicAuth *atc.BasicAuth
 
 	auth map[string]*json.RawMessage
 }
 
-func (t *team) ID() int                           { return t.id }
-func (t *team) Name() string                      { return t.name }
-func (t *team) Admin() bool                       { return t.admin }
-func (t *team) BasicAuth() *atc.BasicAuth         { return t.basicAuth }
+func (t *team) ID() int      { return t.id }
+func (t *team) Name() string { return t.name }
+func (t *team) Admin() bool  { return t.admin }
+
+// func (t *team) BasicAuth() *atc.BasicAuth         { return t.basicAuth }
 func (t *team) Auth() map[string]*json.RawMessage { return t.auth }
 
 func (t *team) Delete() error {
@@ -119,6 +119,18 @@ func (t *team) Delete() error {
 	}
 
 	return tx.Commit()
+}
+
+func (t *team) Rename(name string) error {
+	_, err := psql.Update("teams").
+		Set("name", name).
+		Where(sq.Eq{
+			"id": t.id,
+		}).
+		RunWith(t.conn).
+		Exec()
+
+	return err
 }
 
 func (t *team) Workers() ([]Worker, error) {
@@ -757,23 +769,23 @@ func (t *team) SaveWorker(atcWorker atc.Worker, ttl time.Duration) (Worker, erro
 	return savedWorker, nil
 }
 
-func (t *team) UpdateBasicAuth(basicAuth *atc.BasicAuth) error {
-	encryptedBasicAuth, err := encryptedJSON(basicAuth)
-	if err != nil {
-		return err
-	}
+// func (t *team) UpdateBasicAuth(basicAuth *atc.BasicAuth) error {
+// 	encryptedBasicAuth, err := encryptedJSON(basicAuth)
+// 	if err != nil {
+// 		return err
+// 	}
 
-	query := `
-		UPDATE teams
-		SET basic_auth = $1
-		WHERE LOWER(name) = LOWER($2)
-		RETURNING id, name, admin, basic_auth, auth, nonce
-	`
+// 	query := `
+// 		UPDATE teams
+// 		SET basic_auth = $1
+// 		WHERE id = $2
+// 		RETURNING id, name, admin, basic_auth, auth, nonce
+// 	`
 
-	params := []interface{}{encryptedBasicAuth, t.name}
+// 	params := []interface{}{encryptedBasicAuth, t.id}
 
-	return t.queryTeam(query, params)
-}
+// 	return t.queryTeam(query, params)
+// }
 
 func (t *team) UpdateProviderAuth(auth map[string]*json.RawMessage) error {
 	jsonEncodedProviderAuth, err := json.Marshal(auth)
@@ -790,10 +802,10 @@ func (t *team) UpdateProviderAuth(auth map[string]*json.RawMessage) error {
 	query := `
 		UPDATE teams
 		SET auth = $1, nonce = $3
-		WHERE LOWER(name) = LOWER($2)
-		RETURNING id, name, admin, basic_auth, auth, nonce
+		WHERE id = $2
+		RETURNING id, name, admin, auth, nonce
 	`
-	params := []interface{}{string(encryptedAuth), t.name, nonce}
+	params := []interface{}{string(encryptedAuth), t.id, nonce}
 	return t.queryTeam(query, params)
 }
 
@@ -810,12 +822,9 @@ func (t *team) CreatePipe(pipeGUID string, url string) error {
 		VALUES (
 			$1,
 			$2,
-			( SELECT id
-				FROM teams
-				WHERE name = $3
-			)
+			$3
 		)
-	`, pipeGUID, url, t.name)
+	`, pipeGUID, url, t.id)
 	if err != nil {
 		return err
 	}
@@ -1062,7 +1071,7 @@ func scanPipelines(conn Conn, lockFactory lock.LockFactory, rows *sql.Rows) ([]P
 }
 
 func (t *team) queryTeam(query string, params []interface{}) error {
-	var basicAuth, providerAuth, nonce sql.NullString
+	var providerAuth, nonce sql.NullString
 
 	tx, err := t.conn.Begin()
 	if err != nil {
@@ -1074,7 +1083,6 @@ func (t *team) queryTeam(query string, params []interface{}) error {
 		&t.id,
 		&t.name,
 		&t.admin,
-		&basicAuth,
 		&providerAuth,
 		&nonce,
 	)
@@ -1085,13 +1093,13 @@ func (t *team) queryTeam(query string, params []interface{}) error {
 	if err != nil {
 		return err
 	}
-	if basicAuth.Valid {
-		err = json.Unmarshal([]byte(basicAuth.String), &t.basicAuth)
+	// if basicAuth.Valid {
+	// 	err = json.Unmarshal([]byte(basicAuth.String), &t.basicAuth)
 
-		if err != nil {
-			return err
-		}
-	}
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// }
 
 	if providerAuth.Valid {
 		es := t.conn.EncryptionStrategy()
@@ -1115,19 +1123,19 @@ func (t *team) queryTeam(query string, params []interface{}) error {
 	return nil
 }
 
-func encryptedJSON(b *atc.BasicAuth) (string, error) {
-	var result *atc.BasicAuth
-	if b != nil && b.BasicAuthUsername != "" && b.BasicAuthPassword != "" {
-		encryptedPw, err := bcrypt.GenerateFromPassword([]byte(b.BasicAuthPassword), 4)
-		if err != nil {
-			return "", err
-		}
-		result = &atc.BasicAuth{
-			BasicAuthPassword: string(encryptedPw),
-			BasicAuthUsername: b.BasicAuthUsername,
-		}
-	}
+// func encryptedJSON(b *atc.BasicAuth) (string, error) {
+// 	var result *atc.BasicAuth
+// 	if b != nil && b.BasicAuthUsername != "" && b.BasicAuthPassword != "" {
+// 		encryptedPw, err := bcrypt.GenerateFromPassword([]byte(b.BasicAuthPassword), 4)
+// 		if err != nil {
+// 			return "", err
+// 		}
+// 		result = &atc.BasicAuth{
+// 			BasicAuthPassword: string(encryptedPw),
+// 			BasicAuthUsername: b.BasicAuthUsername,
+// 		}
+// 	}
 
-	json, err := json.Marshal(result)
-	return string(json), err
-}
+// 	json, err := json.Marshal(result)
+// 	return string(json), err
+// }

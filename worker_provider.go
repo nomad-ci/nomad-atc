@@ -318,4 +318,8 @@ func (w *Worker) EnsureCertsVolumeExists(logger lager.Logger) error {
 	return nil
 }
 
+func (w *Worker) CertsVolume(lager.Logger) (volume worker.Volume, found bool, err error) {
+	return nil, false, nil
+}
+
 var _ = worker.Worker(&Worker{})
