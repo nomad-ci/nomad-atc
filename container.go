@@ -29,6 +29,8 @@ const (
 	taskExitStatusPropertyName = "concourse:exit-status"
 )
 
+// Container represents a running docker container in the
+// nomad cluster. It satisfies the worker.Container interface.
 type Container struct {
 	Worker *Worker
 	Logger lager.Logger
@@ -44,6 +46,9 @@ type Container struct {
 
 	image   *worker.ImageResource
 	process *Process
+
+	inputVolumes  []*config.Volume
+	outputVolumes []*config.Volume
 }
 
 func (c *Container) Handle() string {
@@ -208,13 +213,8 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 		tc.WaitForVolumes = true
 	}
 
-	for _, m := range c.inputs {
-		tc.Inputs = append(tc.Inputs, m.MountPath)
-	}
-
-	for _, path := range c.spec.Outputs {
-		tc.Outputs = append(tc.Outputs, path)
-	}
+	tc.Inputs = c.inputVolumes
+	tc.Outputs = c.outputVolumes
 
 	var (
 		dockerImage string

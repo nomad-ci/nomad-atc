@@ -1,12 +1,16 @@
 package nomadatc
 
 import (
+	"archive/tar"
+	"bytes"
 	"errors"
 	fmt "fmt"
 	io "io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	strconv "strconv"
 	"sync"
 	"sync/atomic"
@@ -14,6 +18,7 @@ import (
 
 	"code.cloudfoundry.org/lager"
 	"github.com/concourse/atc/worker"
+	"github.com/golang/snappy"
 	lru "github.com/hashicorp/golang-lru"
 	context "golang.org/x/net/context"
 	grpc "google.golang.org/grpc"
@@ -42,10 +47,12 @@ type Driver struct {
 	ldriver net.Listener
 
 	containers *lru.ARCCache
+
+	workDir string
 }
 
 // NewDriver creates a new Driver
-func NewDriver(logger lager.Logger, port int) (*Driver, error) {
+func NewDriver(logger lager.Logger, workDir string, port int) (*Driver, error) {
 	c, err := lru.NewARC(1024)
 	if err != nil {
 		return nil, err
@@ -57,6 +64,7 @@ func NewDriver(logger lager.Logger, port int) (*Driver, error) {
 		nextStream: 1,
 		xid:        time.Now().Unix(),
 		containers: c,
+		workDir:    workDir,
 	}
 
 	l, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
@@ -181,6 +189,9 @@ func (d *Driver) CancelForBuild(id int) {
 	for _, k := range toDelete {
 		delete(d.streams, k)
 	}
+
+	d.logger.Debug("nomad-driver-remove-build-volumes", lager.Data{"build": id})
+	os.RemoveAll(filepath.Join(d.workDir, fmt.Sprintf("%d", id)))
 }
 
 // FindProcess returns the Process that matches the requested stream id
@@ -190,6 +201,90 @@ func (d *Driver) FindProcess(stream int64) (*Process, bool) {
 	d.mu.Unlock()
 
 	return proc, ok
+}
+
+// StreamBuildVolume finds the data previously written by SendVolume and returns it.
+func (d *Driver) StreamBuildVolume(buildID int, vol, path string) (io.ReadCloser, error) {
+	diskpath := filepath.Join(d.workDir, fmt.Sprintf("%d", buildID), vol)
+	f, err := os.Open(diskpath)
+	if err != nil {
+		return nil, err
+	}
+
+	if path == "." {
+		return f, nil
+	}
+
+	defer f.Close()
+
+	sr := snappy.NewReader(f)
+	tr := tar.NewReader(sr)
+
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			return nil, err
+		}
+
+		if hdr.Name == path {
+			var buf bytes.Buffer
+
+			tw := tar.NewWriter(&buf)
+			tw.WriteHeader(hdr)
+			io.Copy(tw, tr)
+			tw.Close()
+
+			return ioutil.NopCloser(&buf), nil
+		}
+	}
+}
+
+// SendVolume is called by a per-build driver when it wants to upload a volume.
+func (d *Driver) SendVolume(s rpc.Task_SendVolumeServer) error {
+	hdr, err := s.Recv()
+	if err != nil {
+		return err
+	}
+
+	proc, ok := d.FindProcess(hdr.Key)
+	if !ok {
+		return errors.New("unknown process")
+	}
+
+	dir := filepath.Join(d.workDir, fmt.Sprintf("%d", proc.buildId))
+	err = os.MkdirAll(dir, 0755)
+	if err != nil {
+		return err
+	}
+
+	f, err := os.Create(filepath.Join(dir, hdr.Name))
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	var total int64
+
+	for {
+		msg, err := s.Recv()
+		if err != nil {
+			if err == io.EOF {
+				return s.SendAndClose(&rpc.VolumeResponse{
+					Size_: total,
+				})
+			}
+
+			return err
+		}
+
+		total += int64(len(msg.Data))
+
+		_, err = f.Write(msg.Data)
+		if err != nil {
+			return err
+		}
+	}
 }
 
 // ProvideFiles is called via GRPC from a remote driver. This is used to

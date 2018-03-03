@@ -8,7 +8,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -89,25 +88,25 @@ func realmain() {
 		total := new(int64)
 		start := time.Now()
 
-		for _, name := range cfg.Inputs {
-			go func(name string) {
+		for _, vol := range cfg.Inputs {
+			go func(vol *config.Volume) {
 				defer wg.Done()
 
 				fd, err := tc.RequestVolume(ctx, &rpc.VolumeRequest{
-					Name: name,
+					Name: vol.Path,
 				})
 
 				fdtr := &filedataToReader{files: fd}
 
 				sr := snappy.NewReader(fdtr)
 
-				err = tarfs.Extract(sr, name)
+				err = tarfs.Extract(sr, vol.Path)
 				if err != nil {
 					log.Fatal(err)
 				}
 
 				atomic.AddInt64(total, int64(fdtr.totalBytes))
-			}(name)
+			}(vol)
 		}
 
 		wg.Wait()
@@ -139,9 +138,9 @@ func realmain() {
 		fmt.Println(data)
 	}
 
-	for _, path := range cfg.Outputs {
-		log.Printf("creating output dir: %s", path)
-		os.MkdirAll(path, 0755)
+	for _, vol := range cfg.Outputs {
+		log.Printf("creating output dir: %s", vol.Path)
+		os.MkdirAll(vol.Path, 0755)
 	}
 
 	cmd := exec.Command(cfg.Path, cfg.Args...)
@@ -380,6 +379,48 @@ func realmain() {
 			log.Fatal(err)
 		}
 	} else {
+		log.Printf("sending volumes")
+
+		for _, vol := range cfg.Outputs {
+			sender, err := tc.SendVolume(ctx)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			err = sender.Send(&rpc.VolumeData{
+				Key:  cfg.Stream,
+				Name: vol.Handle,
+			})
+
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			var wdt writerToData
+			wdt.files = sender
+
+			tarDir := vol.Path
+			tarPath := "."
+
+			sw := snappy.NewBufferedWriter(wdt)
+
+			err = tarfs.Compress(sw, tarDir, tarPath)
+			if err != nil {
+				log.Printf("unable to tar  %s: %s", tarDir, err)
+				sender.CloseAndRecv()
+				continue
+			}
+
+			sw.Close()
+
+			resp, err := sender.CloseAndRecv()
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			log.Printf("sent '%s': %d bytes reported", vol.Handle, resp.Size_)
+		}
+
 		log.Printf("sending finished with status=0")
 		err = emit.Send(&rpc.OutputData{
 			Finished:       true,
@@ -392,67 +433,6 @@ func realmain() {
 	}
 
 	log.Printf("process done: %s", err)
-
-	if cfg.WaitForVolumes {
-		files, err := tc.ProvideFiles(ctx)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		for {
-			req, err := files.Recv()
-			if err != nil {
-				log.Printf("files recv error: %s", err)
-				break
-			}
-
-			log.Printf("fetching requested file: %s", req.Path)
-
-			var wdt writerToData
-			wdt.files = files
-
-			var out io.Writer = wdt
-
-			src := req.Path
-
-			fileInfo, err := os.Stat(src)
-			if err != nil {
-				log.Printf("unable to stat %s: %s", src, err)
-				files.Send(&rpc.FileData{})
-				continue
-			}
-
-			var tarDir, tarPath string
-			var sw *snappy.Writer
-
-			if fileInfo.IsDir() {
-				tarDir = src
-				tarPath = "."
-
-				sw = snappy.NewBufferedWriter(out)
-				out = sw
-			} else {
-				tarDir = filepath.Dir(src)
-				tarPath = filepath.Base(src)
-			}
-
-			err = tarfs.Compress(out, tarDir, tarPath)
-			if err != nil {
-				log.Printf("unable to tar  %s: %s", tarDir, err)
-				files.Send(&rpc.FileData{})
-				continue
-			}
-
-			if sw != nil {
-				sw.Close()
-			}
-
-			err = files.Send(&rpc.FileData{})
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-	}
 
 	emit.CloseSend()
 	wg.Wait()
@@ -468,7 +448,7 @@ func realmain() {
 }
 
 type writerToData struct {
-	files rpc.Task_ProvideFilesClient
+	files rpc.Task_SendVolumeClient
 }
 
 const chunkSize = 1024 * 32
@@ -487,7 +467,7 @@ func (w writerToData) Write(data []byte) (int, error) {
 			data = nil
 		}
 
-		err := w.files.Send(&rpc.FileData{
+		err := w.files.Send(&rpc.VolumeData{
 			Data: buf,
 		})
 

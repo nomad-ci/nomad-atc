@@ -43,9 +43,21 @@ message VolumeRequest {
   string name = 1;
 }
 
+message VolumeData {
+  int64 key = 1;
+  bytes data = 2;
+  string name = 3;
+}
+
+message VolumeResponse {
+  int32 key = 1;
+  int64 size = 2;
+}
+
 service Task {
   // Sends a greeting
   rpc EmitOutput(stream OutputData) returns (stream Actions) {}
   rpc ProvideFiles(stream FileData) returns (stream FileRequest) {}
   rpc RequestVolume(VolumeRequest) returns (stream FileData) {}
+  rpc SendVolume(stream VolumeData) returns (VolumeResponse) {}
 }

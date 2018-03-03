@@ -137,10 +137,11 @@ type ATCCommand struct {
 		InternalIP    IPFlag            `long:"internal-ip" description:"Internal IP of concourse for workers to connect back to"`
 		InternalPort  int               `long:"internal-port" description:"Port to use along with internal-ip for workers to connect back to" default:"12101"`
 
-		TaskMemory     int `long:"task-memory" description:"How many megabytes of memory to give to task type containers" default:"2048"`
-		ResourceMemory int `long:"resource-memory" description:"How many megabytes of memory to give to resource type containers" default:"512"`
-		TaskCPU        int `long:"task-cpu" description:"How many cpu shares to give to task type containers" default:"1000"`
-		ResourceCPU    int `long:"resource-cpu" description:"How many cpu shares to give to resource type containers" default:"500"`
+		TaskMemory     int    `long:"task-memory" description:"How many megabytes of memory to give to task type containers" default:"2048"`
+		ResourceMemory int    `long:"resource-memory" description:"How many megabytes of memory to give to resource type containers" default:"512"`
+		TaskCPU        int    `long:"task-cpu" description:"How many cpu shares to give to task type containers" default:"1000"`
+		ResourceCPU    int    `long:"resource-cpu" description:"How many cpu shares to give to resource type containers" default:"500"`
+		WorkDir        string `long:"work-dir" description:"Directory to store build inputs/ouputs between resources/jobs"`
 	} `group:"Nomad Cluster" namespace:"nomad"`
 
 	Metrics struct {
@@ -780,7 +781,7 @@ func (cmd *ATCCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		}
 	})
 
-	nomadDriver, err := nomadatc.NewDriver(logger, cmd.Nomad.InternalPort)
+	nomadDriver, err := nomadatc.NewDriver(logger, cmd.Nomad.WorkDir, cmd.Nomad.InternalPort)
 	if err != nil {
 		return nil, err
 	}

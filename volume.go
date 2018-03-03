@@ -3,7 +3,6 @@ package nomadatc
 import (
 	fmt "fmt"
 	io "io"
-	"path/filepath"
 
 	"code.cloudfoundry.org/lager"
 	"github.com/concourse/atc/db"
@@ -12,9 +11,10 @@ import (
 )
 
 type Volume struct {
-	Logger    lager.Logger
-	Source    worker.ArtifactSource
-	Container *Container
+	Logger  lager.Logger
+	Source  worker.ArtifactSource
+	buildId int
+	Driver  *Driver
 
 	handle string
 
@@ -59,7 +59,7 @@ func (v *Volume) StreamIn(path string, tarStream io.Reader) error {
 
 func (v *Volume) StreamOut(path string) (io.ReadCloser, error) {
 	v.Logger.Info("nomad-volume-stream-out", lager.Data{"path": path})
-	return v.Container.process.StreamOut(filepath.Join(v.path, path))
+	return v.Driver.StreamBuildVolume(v.buildId, v.handle, path)
 }
 
 func (v *Volume) COWStrategy() baggageclaim.COWStrategy {

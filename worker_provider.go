@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/baggageclaim"
 	"github.com/cppforlife/go-semi-semantic/version"
 	nomad "github.com/hashicorp/nomad/api"
+	"github.com/nomad-ci/nomad-atc/config"
 )
 
 type WorkerProvider struct {
@@ -193,11 +194,12 @@ func (w *Worker) FindOrCreateContainer(logger lager.Logger, signals <-chan os.Si
 
 	for _, input := range spec.Inputs {
 		volume := &Volume{
-			Logger:    logger,
-			Source:    input.Source(),
-			Container: cont,
-			path:      input.DestinationPath(),
-			handle:    fmt.Sprintf("%x", w.Provider.Driver.XID()),
+			Logger:  logger,
+			Driver:  w.Provider.Driver,
+			Source:  input.Source(),
+			buildId: md.BuildID,
+			path:    input.DestinationPath(),
+			handle:  fmt.Sprintf("%x", w.Provider.Driver.XID()),
 		}
 
 		mount := worker.VolumeMount{
@@ -207,13 +209,19 @@ func (w *Worker) FindOrCreateContainer(logger lager.Logger, signals <-chan os.Si
 
 		cont.inputs = append(cont.inputs, mount)
 		cont.mounts = append(cont.mounts, mount)
+		cont.inputVolumes = append(cont.inputVolumes, &config.Volume{
+			Path:   input.DestinationPath(),
+			Handle: volume.handle,
+		})
 	}
 
 	for _, outputPath := range spec.Outputs {
 		volume := &Volume{
-			Logger:    logger,
-			Container: cont,
-			path:      outputPath,
+			Logger:  logger,
+			Driver:  w.Provider.Driver,
+			buildId: md.BuildID,
+			path:    outputPath,
+			handle:  fmt.Sprintf("%x", w.Provider.Driver.XID()),
 		}
 
 		mount := worker.VolumeMount{
@@ -222,6 +230,10 @@ func (w *Worker) FindOrCreateContainer(logger lager.Logger, signals <-chan os.Si
 		}
 
 		cont.mounts = append(cont.mounts, mount)
+		cont.outputVolumes = append(cont.outputVolumes, &config.Volume{
+			Path:   outputPath,
+			Handle: volume.handle,
+		})
 	}
 
 	w.Provider.Driver.containers.Add(cont.handle, cont)
