@@ -542,7 +542,13 @@ outer:
 		for _, ts := range alloc.TaskStates {
 			for _, ev := range ts.Events {
 				if ev.Time > seenEventTime {
-					fmt.Fprintf(io.Stderr, "\x1B[2mnomad: %s\x1B[0m\n", ev.DisplayMessage)
+					if ev.Type == "Terminated" && ev.ExitCode == 0 {
+						continue
+					}
+
+					if len(ev.DisplayMessage) > 0 {
+						fmt.Fprintf(io.Stderr, "\x1B[2mnomad: %s\x1B[0m\n", ev.DisplayMessage)
+					}
 					seenEventTime = ev.Time
 				}
 			}
