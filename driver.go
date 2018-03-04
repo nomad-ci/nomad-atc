@@ -488,7 +488,7 @@ func (d *Driver) EmitOutput(s rpc.Task_EmitOutputServer) error {
 
 		if msg.Finished {
 			d.logger.Info("nomad-driver-process-finished", lager.Data{"job": proc.job, "status": msg.FinishedStatus})
-			proc.setFinished(msg.FinishedStatus)
+			proc.setStatus(msg.FinishedStatus)
 		}
 	}
 
