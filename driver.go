@@ -20,6 +20,7 @@ import (
 	"github.com/concourse/atc/worker"
 	"github.com/golang/snappy"
 	lru "github.com/hashicorp/golang-lru"
+	nomad "github.com/hashicorp/nomad/api"
 	context "golang.org/x/net/context"
 	grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -52,17 +53,46 @@ type Driver struct {
 }
 
 // NewDriver creates a new Driver
-func NewDriver(logger lager.Logger, workDir string, port int) (*Driver, error) {
+func NewDriver(logger lager.Logger, workDir, nomadURL string, port int) (*Driver, error) {
 	c, err := lru.NewARC(1024)
 	if err != nil {
 		return nil, err
 	}
 
+	cur := time.Now().Unix()
+	xid := cur
+
+	cfg := nomad.DefaultConfig()
+	cfg.Address = nomadURL
+
+	n, err := nomad.NewClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	agent, err := n.Agent().Self()
+	if err != nil {
+		return nil, err
+	}
+
+	if raft, ok := agent.Stats["raft"]; ok {
+		if lli, ok := raft["last_log_index"]; ok {
+			if extra, err := strconv.Atoi(lli); err == nil {
+				xid = xid + int64(extra)
+			}
+		}
+	}
+
+	logger.Info("nomad-driver-init", lager.Data{
+		"current_time": cur,
+		"start_xid":    xid,
+	})
+
 	d := &Driver{
 		logger:     logger.Session("nomad-driver"),
 		streams:    make(map[int64]*Process),
 		nextStream: 1,
-		xid:        time.Now().Unix(),
+		xid:        xid,
 		containers: c,
 		workDir:    workDir,
 	}

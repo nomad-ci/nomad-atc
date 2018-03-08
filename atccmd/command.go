@@ -781,7 +781,7 @@ func (cmd *ATCCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 		}
 	})
 
-	nomadDriver, err := nomadatc.NewDriver(logger, cmd.Nomad.WorkDir, cmd.Nomad.InternalPort)
+	nomadDriver, err := nomadatc.NewDriver(logger, cmd.Nomad.WorkDir, cmd.Nomad.URL.String(), cmd.Nomad.InternalPort)
 	if err != nil {
 		return nil, err
 	}

@@ -348,7 +348,7 @@ func (c *Container) Run(spec garden.ProcessSpec, io garden.ProcessIO) (garden.Pr
 
 	c.Logger.Info("nomad-registered-job", lager.Data{"job": *job.ID, "eval": resp.EvalID, "image": dockerImage})
 	go func() {
-		proc.monitor(resp.EvalID, io)
+		proc.monitor(io)
 	}()
 
 	return proc, nil
@@ -449,7 +449,9 @@ type Process struct {
 	cancel  func()
 }
 
-func (p *Process) monitor(evalid string, io garden.ProcessIO) {
+const maxAllocDetect = 30 * time.Second
+
+func (p *Process) monitor(io garden.ProcessIO) {
 	// Be sure that when monitor exists, we have set a finished state
 	defer p.setFinished(255)
 
@@ -459,24 +461,28 @@ func (p *Process) monitor(evalid string, io garden.ProcessIO) {
 	q.WaitTime = 10 * time.Second
 
 	var (
-		list []*nomad.AllocationListStub
-		meta *nomad.QueryMeta
-		err  error
-		id   string
+		list  []*nomad.AllocationListStub
+		meta  *nomad.QueryMeta
+		err   error
+		id    string
+		start = time.Now()
 	)
 
 outer:
 	for {
+		if time.Since(start) > maxAllocDetect {
+			fmt.Fprintf(io.Stderr, "Unable to start nomad allocation: waited 30 seconds")
+			return
+		}
+
 		list, meta, err = n.Jobs().Allocations(p.job, true, &q)
 		if err != nil {
 			break
 		}
 
 		for _, alloc := range list {
-			if alloc.EvalID == evalid {
-				id = alloc.ID
-				break outer
-			}
+			id = alloc.ID
+			break outer
 		}
 
 		q.WaitIndex = meta.LastIndex
