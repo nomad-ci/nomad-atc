@@ -3,6 +3,7 @@ package nomadatc
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/json"
 	"errors"
 	fmt "fmt"
 	io "io"
@@ -20,7 +21,6 @@ import (
 	"github.com/concourse/atc/worker"
 	"github.com/golang/snappy"
 	lru "github.com/hashicorp/golang-lru"
-	nomad "github.com/hashicorp/nomad/api"
 	context "golang.org/x/net/context"
 	grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -52,6 +52,10 @@ type Driver struct {
 	workDir string
 }
 
+type driverState struct {
+	XID int64 `json:"xid"`
+}
+
 // NewDriver creates a new Driver
 func NewDriver(logger lager.Logger, workDir, nomadURL string, port int) (*Driver, error) {
 	c, err := lru.NewARC(1024)
@@ -59,33 +63,21 @@ func NewDriver(logger lager.Logger, workDir, nomadURL string, port int) (*Driver
 		return nil, err
 	}
 
-	cur := time.Now().Unix()
-	xid := cur
+	xid := time.Now().Unix()
 
-	cfg := nomad.DefaultConfig()
-	cfg.Address = nomadURL
+	f, err := os.Open(filepath.Join(workDir, "state.json"))
+	if err == nil {
+		defer f.Close()
 
-	n, err := nomad.NewClient(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	agent, err := n.Agent().Self()
-	if err != nil {
-		return nil, err
-	}
-
-	if raft, ok := agent.Stats["raft"]; ok {
-		if lli, ok := raft["last_log_index"]; ok {
-			if extra, err := strconv.Atoi(lli); err == nil {
-				xid = xid + int64(extra)
-			}
+		var ds driverState
+		err = json.NewDecoder(f).Decode(&ds)
+		if err == nil {
+			xid = ds.XID
 		}
 	}
 
 	logger.Info("nomad-driver-init", lager.Data{
-		"current_time": cur,
-		"start_xid":    xid,
+		"start_xid": xid,
 	})
 
 	d := &Driver{
@@ -115,12 +107,38 @@ func NewDriver(logger lager.Logger, workDir, nomadURL string, port int) (*Driver
 
 	rpc.RegisterTaskServer(d.serv, d)
 
+	go d.saveXIDPeriodicly()
+
 	return d, nil
 }
 
 // XID returns the next unique number
 func (d *Driver) XID() int64 {
 	return atomic.AddInt64(&d.xid, 1)
+}
+
+func (d *Driver) saveXID() error {
+	f, err := os.Create(filepath.Join(d.workDir, "state.json"))
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	var ds driverState
+	ds.XID = atomic.LoadInt64(&d.xid)
+
+	return json.NewEncoder(f).Encode(&ds)
+}
+
+func (d *Driver) saveXIDPeriodicly() {
+	for {
+		err := d.saveXID()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing XID: %s", err)
+		}
+		time.Sleep(5 * time.Minute)
+	}
 }
 
 // Run the driver's components, such as the http server and GRPC server
@@ -161,6 +179,7 @@ func (d *Driver) Run(signals <-chan os.Signal, ready chan<- struct{}) error {
 	case <-signals:
 		d.l.Close()
 		d.ldriver.Close()
+		d.saveXID()
 
 		return nil
 	}
